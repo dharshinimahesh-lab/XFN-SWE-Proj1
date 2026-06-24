@@ -105,6 +105,51 @@ def _sprint_names(value: Any) -> list[str]:
     return names
 
 
+def normalize_issue(issue: dict[str, Any]) -> dict[str, Any]:
+    fields = issue.get("fields", {})
+    risks = _string_list(fields.get(FIELDS["risks"]))
+    dependencies = _string_list(fields.get(FIELDS["dependencies"]))
+    blockers = _string_list(fields.get(FIELDS["blocking_deliverable"]))
+    needs = [*dependencies, *blockers]
+    done = _is_done(fields)
+    team_name = _first_text(
+        fields.get(FIELDS["responsible_team_alt"]),
+        fields.get(FIELDS["responsible_team"]),
+        fields.get(FIELDS["cross_functional_team"]),
+        fields.get(FIELDS["team"]),
+        fields.get(FIELDS["team_alt"]),
+        fallback="Unknown Team",
+    )
+    group_name = _first_text(fields.get(FIELDS["accountable_group"]), fallback="Unscoped")
+    goal = _first_text(fields.get(FIELDS["goals"]), fields.get(FIELDS["summary"]), fallback="No summary")
+    update = _first_text(fields.get(FIELDS["pm_update"]), fallback="")
+    progress = _first_text(fields.get(FIELDS["delivery_progress"]), fallback="")
+    health = _health_label(fields, bool(risks), done)
+    sprints = _sprint_names(fields.get(FIELDS["sprint"]))
+
+    return {
+        "issueKey": issue.get("key"),
+        "team": team_name,
+        "group": group_name,
+        "goal": goal,
+        "met": done,
+        "risks": risks,
+        "needs": needs,
+        "health": health,
+        "status": _first_text(fields.get(FIELDS["status"]), fallback="Unknown"),
+        "assignee": _first_text(fields.get(FIELDS["assignee"]), fallback="Unassigned"),
+        "updated": fields.get(FIELDS["updated"]),
+        "sprints": sprints,
+        "details": {
+            "pmUpdate": update,
+            "progress": progress,
+            "blockers": blockers,
+            "dependencies": dependencies,
+            "risks": risks,
+        },
+    }
+
+
 def build_dashboard_payload(
     client: JiraClient,
     *,
@@ -128,51 +173,10 @@ def build_dashboard_payload(
     sprint_options: set[str] = set()
 
     for issue in issues:
-        fields = issue.get("fields", {})
-        risks = _string_list(fields.get(FIELDS["risks"]))
-        dependencies = _string_list(fields.get(FIELDS["dependencies"]))
-        blockers = _string_list(fields.get(FIELDS["blocking_deliverable"]))
-        needs = [*dependencies, *blockers]
-        done = _is_done(fields)
-        team_name = _first_text(
-            fields.get(FIELDS["responsible_team_alt"]),
-            fields.get(FIELDS["responsible_team"]),
-            fields.get(FIELDS["cross_functional_team"]),
-            fields.get(FIELDS["team"]),
-            fields.get(FIELDS["team_alt"]),
-            fallback="Unknown Team",
-        )
-        group_name = _first_text(fields.get(FIELDS["accountable_group"]), fallback="Unscoped")
-        goal = _first_text(fields.get(FIELDS["goals"]), fields.get(FIELDS["summary"]), fallback="No summary")
-        update = _first_text(fields.get(FIELDS["pm_update"]), fallback="No PM update provided.")
-        progress = _first_text(fields.get(FIELDS["delivery_progress"]), fallback="No delivery progress provided.")
-        health = _health_label(fields, bool(risks), done)
-        sprints = _sprint_names(fields.get(FIELDS["sprint"]))
+        normalized = normalize_issue(issue)
+        sprints = normalized["sprints"]
         sprint_options.update(sprints)
-
-        teams.append(
-            {
-                "issueKey": issue.get("key"),
-                "team": team_name,
-                "group": group_name,
-                "goal": goal,
-                "met": done,
-                "risks": risks,
-                "needs": needs,
-                "health": health,
-                "status": _first_text(fields.get(FIELDS["status"]), fallback="Unknown"),
-                "assignee": _first_text(fields.get(FIELDS["assignee"]), fallback="Unassigned"),
-                "updated": fields.get(FIELDS["updated"]),
-                "sprints": sprints,
-                "details": {
-                    "pmUpdate": update,
-                    "progress": progress,
-                    "blockers": blockers,
-                    "dependencies": dependencies,
-                    "risks": risks,
-                },
-            }
-        )
+        teams.append(normalized)
 
     open_risks = sum(1 for team in teams if team["risks"])
     goals_met = sum(1 for team in teams if team["met"])
@@ -221,3 +225,21 @@ def build_dashboard_payload(
         "sprints": sorted(sprint_options),
         "lastSync": teams[0]["updated"] if teams else None,
     }
+
+
+def build_issue_lookup_payload(client: JiraClient, *, issue_keys: list[str]) -> dict[str, Any]:
+    cleaned_keys = [key.strip() for key in issue_keys if key and key.strip()]
+    if not cleaned_keys:
+        return {"issues": {}, "lastSync": None}
+
+    escaped_keys = ",".join(f'"{key.replace(chr(34), chr(92) + chr(34))}"' for key in cleaned_keys)
+    issues = client.search_issues(
+        jql=f"key in ({escaped_keys}) ORDER BY updated DESC",
+        fields=list(FIELDS.values()),
+        max_results=len(cleaned_keys),
+    )
+
+    normalized = [normalize_issue(issue) for issue in issues]
+    issues_by_key = {item["issueKey"]: item for item in normalized}
+    last_sync = normalized[0]["updated"] if normalized else None
+    return {"issues": issues_by_key, "lastSync": last_sync}
