@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
+  Activity,
   AlertTriangle,
   BarChart3,
   Bell,
@@ -7,7 +8,6 @@ import {
   Calendar,
   CalendarDays,
   CheckCircle2,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronUp,
@@ -21,9 +21,22 @@ import {
   Smile,
   Target,
   Users,
-  Activity,
 } from "lucide-react";
 import "./XFNCenter.css";
+import { TEAM_CATALOG, TEAM_FIELDS, SPRINT_LABEL, createEmptyTeamData } from "./teamCatalog";
+
+const PAGE_SIZE = 5;
+const VIEW_STORAGE_KEY = "xfn-center-view";
+const EDITS_STORAGE_KEY = "xfn-center-team-edits";
+
+const defaultView = {
+  search: "",
+  group: "All",
+  team: "All",
+  sprint: SPRINT_LABEL,
+  risk: "All",
+  sortBy: "Group",
+};
 
 const metricIcons = {
   Target,
@@ -32,34 +45,65 @@ const metricIcons = {
   Users,
 };
 
-const initialData = {
-  teams: [],
-  metrics: [],
-  sprints: [],
-  lastSync: null,
-  project: "",
-};
+function loadSavedJson(key, fallback) {
+  try {
+    const saved = window.localStorage.getItem(key);
+    return saved ? JSON.parse(saved) : fallback;
+  } catch {
+    return fallback;
+  }
+}
 
 function formatSyncTime(value) {
-  if (!value) {
-    return "Awaiting first sync";
-  }
-
   return new Intl.DateTimeFormat("en-US", {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));
 }
 
-function Filter({ label, value, onClick }) {
+function previewText(value) {
+  return value?.trim() ? value : "—";
+}
+
+function teamHasRisks(team) {
+  return Boolean(team.impactsOrRisks.trim());
+}
+
+function teamHasNeeds(team) {
+  return Boolean(team.needsFromOtherTeams.trim());
+}
+
+function sortTeams(teams, sortBy) {
+  const values = [...teams];
+  values.sort((left, right) => {
+    if (sortBy === "Team") {
+      return left.team.localeCompare(right.team);
+    }
+
+    if (sortBy === "Updated") {
+      return right.updatedAt.localeCompare(left.updatedAt) || left.team.localeCompare(right.team);
+    }
+
+    return left.group.localeCompare(right.group) || left.team.localeCompare(right.team);
+  });
+
+  return values;
+}
+
+function FilterSelect({ label, value, options, onChange }) {
   return (
-    <button className="filter" onClick={onClick} type="button">
+    <label className="filter filter-select">
       <span>
         <small>{label}</small>
-        <strong>{value}</strong>
+        <select value={value} onChange={(event) => onChange(event.target.value)}>
+          {options.map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
+        </select>
       </span>
-      <ChevronDown size={16} />
-    </button>
+    </label>
   );
 }
 
@@ -106,129 +150,187 @@ function DetailItem({ icon: Icon, title, body, tone }) {
   );
 }
 
-async function fetchJson(path, options) {
-  const response = await fetch(path, options);
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(body || `Request failed with status ${response.status}`);
-  }
-  return response.json();
-}
-
 export default function XFNCenter() {
-  const [projects, setProjects] = useState([]);
-  const [dashboard, setDashboard] = useState(initialData);
-  const [project, setProject] = useState("");
-  const [sprint, setSprint] = useState("");
-  const [selectedIssueKey, setSelectedIssueKey] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [syncing, setSyncing] = useState(false);
-  const [error, setError] = useState("");
+  const [view, setView] = useState(() => loadSavedJson(VIEW_STORAGE_KEY, defaultView));
+  const [teamEdits, setTeamEdits] = useState(() => loadSavedJson(EDITS_STORAGE_KEY, {}));
+  const [selectedTeamName, setSelectedTeamName] = useState(TEAM_CATALOG[0]?.team || "");
+  const [page, setPage] = useState(1);
+  const [lastRefresh, setLastRefresh] = useState(() => new Date().toISOString());
+  const [saveState, setSaveState] = useState("Save View");
 
-  const selectedTeam = useMemo(
+  useEffect(() => {
+    window.localStorage.setItem(VIEW_STORAGE_KEY, JSON.stringify(view));
+  }, [view]);
+
+  useEffect(() => {
+    window.localStorage.setItem(EDITS_STORAGE_KEY, JSON.stringify(teamEdits));
+  }, [teamEdits]);
+
+  const teams = useMemo(
     () =>
-      dashboard.teams.find((row) => row.issueKey === selectedIssueKey) || dashboard.teams[0] || null,
-    [dashboard.teams, selectedIssueKey],
+      TEAM_CATALOG.map((teamMeta) => {
+        const edits = teamEdits[teamMeta.team] || createEmptyTeamData();
+        return {
+          ...teamMeta,
+          ...edits,
+          updatedAt: edits.updatedAt || "",
+        };
+      }),
+    [teamEdits],
   );
 
-  useEffect(() => {
-    let active = true;
+  const groupOptions = useMemo(
+    () => ["All", ...new Set(TEAM_CATALOG.map((team) => team.group))],
+    [],
+  );
 
-    fetchJson("/api/projects")
-      .then((payload) => {
-        if (!active) {
-          return;
+  const teamOptions = useMemo(() => {
+    const scopedTeams =
+      view.group === "All" ? TEAM_CATALOG : TEAM_CATALOG.filter((team) => team.group === view.group);
+    return ["All", ...scopedTeams.map((team) => team.team)];
+  }, [view.group]);
+
+  const filteredTeams = useMemo(() => {
+    const search = view.search.trim().toLowerCase();
+
+    return sortTeams(
+      teams.filter((team) => {
+        if (view.group !== "All" && team.group !== view.group) {
+          return false;
         }
-        setProjects(payload.projects || []);
-        setProject((currentProject) => {
-          if (currentProject) {
-            return currentProject;
-          }
-          return payload.defaultProject || payload.projects?.[0]?.key || "";
-        });
-      })
-      .catch((fetchError) => {
-        if (active) {
-          setError(fetchError.message);
-        }
-      });
 
-    return () => {
-      active = false;
-    };
-  }, []);
+        if (view.team !== "All" && team.team !== view.team) {
+          return false;
+        }
+
+        if (view.risk === "Flagged" && !teamHasRisks(team)) {
+          return false;
+        }
+
+        if (view.risk === "Clear" && teamHasRisks(team)) {
+          return false;
+        }
+
+        if (!search) {
+          return true;
+        }
+
+        return [
+          team.team,
+          team.group,
+          team.issueKey,
+          team.ownerPm,
+          team.ownerTl,
+          team.sprintGoal,
+          team.currentProgress,
+          team.upcomingWork,
+          team.impactsOrRisks,
+          team.needsFromOtherTeams,
+        ]
+          .join(" ")
+          .toLowerCase()
+          .includes(search);
+      }),
+      view.sortBy,
+    );
+  }, [teams, view]);
 
   useEffect(() => {
-    if (!project) {
-      return;
+    setPage(1);
+  }, [view]);
+
+  useEffect(() => {
+    if (!filteredTeams.some((team) => team.team === selectedTeamName)) {
+      setSelectedTeamName(filteredTeams[0]?.team || TEAM_CATALOG[0]?.team || "");
     }
+  }, [filteredTeams, selectedTeamName]);
 
-    const params = new URLSearchParams({ project });
-    if (sprint) {
-      params.set("sprint", sprint);
-    }
+  const totalPages = Math.max(1, Math.ceil(filteredTeams.length / PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const pageTeams = filteredTeams.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
 
-    setLoading(true);
-    setError("");
+  const selectedTeam =
+    filteredTeams.find((team) => team.team === selectedTeamName) ||
+    teams.find((team) => team.team === selectedTeamName) ||
+    teams[0];
 
-    fetchJson(`/api/dashboard?${params.toString()}`)
-      .then((payload) => {
-        setDashboard(payload);
-        setSelectedIssueKey(payload.teams?.[0]?.issueKey || "");
-      })
-      .catch((fetchError) => {
-        setError(fetchError.message);
-      })
-      .finally(() => {
-        setLoading(false);
-      });
-  }, [project, sprint]);
+  const metrics = useMemo(() => {
+    const goalsSet = teams.filter((team) => team.sprintGoal.trim()).length;
+    const riskTeams = teams.filter((team) => teamHasRisks(team)).length;
+    const needsTeams = teams.filter((team) => teamHasNeeds(team)).length;
+    const ownersSet = teams.filter((team) => team.ownerPm.trim() || team.ownerTl.trim()).length;
 
-  async function handleSync() {
-    if (!project) {
-      return;
-    }
+    return [
+      {
+        label: "Tracked Teams",
+        value: String(filteredTeams.length),
+        sub: "in scope",
+        delta: "From the XFN sync roster",
+        tone: "blue",
+        icon: "Target",
+      },
+      {
+        label: "Goals Filled",
+        value: `${goalsSet} / ${teams.length}`,
+        sub: "teams",
+        delta: "Editable team data",
+        tone: "green",
+        icon: "CheckCircle2",
+      },
+      {
+        label: "Risk Notes",
+        value: String(riskTeams),
+        sub: "teams",
+        delta: "Impacts or risks entered",
+        tone: "orange",
+        icon: "AlertTriangle",
+      },
+      {
+        label: "Owners Set",
+        value: String(ownersSet),
+        sub: "teams",
+        delta: "PM or TL entered",
+        tone: "purple",
+        icon: "Users",
+      },
+    ];
+  }, [filteredTeams.length, teams]);
 
-    setSyncing(true);
-    setError("");
-
-    try {
-      const payload = await fetchJson("/api/sync", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ project, sprint }),
-      });
-      setDashboard(payload);
-      setSelectedIssueKey(payload.teams?.[0]?.issueKey || "");
-    } catch (fetchError) {
-      setError(fetchError.message);
-    } finally {
-      setSyncing(false);
-    }
+  function updateView(key, value) {
+    setView((current) => ({ ...current, [key]: value }));
   }
 
-  function cycleProject(direction) {
-    if (!projects.length) {
+  function updateSelectedTeamField(field, value) {
+    if (!selectedTeam) {
       return;
     }
 
-    const currentIndex = projects.findIndex((item) => item.key === project);
-    const nextIndex = (currentIndex + direction + projects.length) % projects.length;
-    setSprint("");
-    setProject(projects[nextIndex].key);
+    setTeamEdits((current) => ({
+      ...current,
+      [selectedTeam.team]: {
+        ...(current[selectedTeam.team] || createEmptyTeamData()),
+        [field]: value,
+        updatedAt: new Date().toISOString(),
+      },
+    }));
   }
 
-  function cycleSprint(direction) {
-    if (!dashboard.sprints.length) {
+  function resetSelectedTeam() {
+    if (!selectedTeam) {
       return;
     }
 
-    const options = ["", ...dashboard.sprints];
-    const currentIndex = options.indexOf(sprint);
-    const nextIndex = (currentIndex + direction + options.length) % options.length;
-    setSprint(options[nextIndex]);
+    setTeamEdits((current) => {
+      const next = { ...current };
+      delete next[selectedTeam.team];
+      return next;
+    });
+  }
+
+  function saveView() {
+    window.localStorage.setItem(VIEW_STORAGE_KEY, JSON.stringify(view));
+    setSaveState("Saved");
+    window.setTimeout(() => setSaveState("Save View"), 1200);
   }
 
   return (
@@ -240,70 +342,93 @@ export default function XFNCenter() {
         </div>
 
         <div className="topbar-actions">
-          <button className="sprint-picker" onClick={() => cycleSprint(1)} type="button">
+          <div className="sprint-picker">
             <span>Sprint:</span>
-            <strong>{sprint || "All"}</strong>
-            <ChevronDown size={16} />
+            <strong>{view.sprint}</strong>
             <Calendar size={18} />
-          </button>
+          </div>
 
-          <span className="sync-meta">Last sync: {formatSyncTime(dashboard.lastSync)}</span>
+          <span className="sync-meta">Last refresh: {formatSyncTime(lastRefresh)}</span>
 
-          <button className="ghost-button" onClick={handleSync} type="button">
+          <button className="ghost-button" onClick={() => setLastRefresh(new Date().toISOString())} type="button">
             <RefreshCw size={16} />
-            {syncing ? "Syncing..." : "Sync Now"}
+            Refresh View
           </button>
 
           <button className="icon-button notification-button" type="button">
             <Bell size={20} />
-            <span>{dashboard.teams.length}</span>
+            <span>{teams.filter((team) => teamHasRisks(team)).length}</span>
           </button>
 
           <button className="avatar" type="button">
-            JR
+            XFN
           </button>
         </div>
       </header>
 
       <section className="filters-row">
         <label className="search-box">
-          <span>{project ? `Live Jira project: ${project}` : "Loading Jira projects..."}</span>
+          <input
+            aria-label="Search teams"
+            placeholder="Search teams, owners, goals, risks, needs..."
+            type="text"
+            value={view.search}
+            onChange={(event) => updateView("search", event.target.value)}
+          />
           <Search size={19} />
         </label>
 
-        <Filter
-          label="Project"
-          value={project || "Loading"}
-          onClick={() => cycleProject(1)}
+        <FilterSelect
+          label="Scrum Team"
+          value={view.team}
+          options={teamOptions}
+          onChange={(value) => updateView("team", value)}
         />
-        <Filter
-          label="Sprint"
-          value={sprint || "All"}
-          onClick={() => cycleSprint(1)}
+        <FilterSelect
+          label="Group"
+          value={view.group}
+          options={groupOptions}
+          onChange={(value) => {
+            setView((current) => ({
+              ...current,
+              group: value,
+              team:
+                current.team !== "All" &&
+                value !== "All" &&
+                !TEAM_CATALOG.some((team) => team.group === value && team.team === current.team)
+                  ? "All"
+                  : current.team,
+            }));
+          }}
         />
-        <Filter
-          label="Selected Team"
-          value={selectedTeam?.team || "None"}
-          onClick={() => {}}
+        <FilterSelect
+          label="Sprint Iteration"
+          value={view.sprint}
+          options={[SPRINT_LABEL]}
+          onChange={(value) => updateView("sprint", value)}
         />
-        <Filter
+        <FilterSelect
           label="Risk Level"
-          value={selectedTeam?.risks?.length ? "Flagged" : "Clear"}
-          onClick={() => {}}
+          value={view.risk}
+          options={["All", "Flagged", "Clear"]}
+          onChange={(value) => updateView("risk", value)}
         />
-        <Filter label="Sort By" value="Updated" onClick={() => {}} />
+        <FilterSelect
+          label="Sort By"
+          value={view.sortBy}
+          options={["Group", "Team", "Updated"]}
+          onChange={(value) => updateView("sortBy", value)}
+        />
 
-        <button className="icon-button" type="button">
+        <button className="icon-button" onClick={() => setView(defaultView)} type="button">
           <SlidersHorizontal size={20} />
         </button>
 
-        <button className="save-button" type="button">
+        <button className="save-button" onClick={saveView} type="button">
           <Bookmark size={17} />
-          Live View
+          {saveState}
         </button>
       </section>
-
-      {error ? <p className="empty-cell">Jira error: {error}</p> : null}
 
       <div className="dashboard-grid">
         <section className="main-column">
@@ -319,20 +444,19 @@ export default function XFNCenter() {
                     <th>Team</th>
                     <th>Group</th>
                     <th>Sprint Goal</th>
-                    <th>Met?</th>
+                    <th>Current Progress</th>
                     <th>Risks</th>
                     <th>Needs</th>
-                    <th>Health</th>
                     <th />
                   </tr>
                 </thead>
 
                 <tbody>
-                  {dashboard.teams.map((row) => (
+                  {pageTeams.map((row) => (
                     <tr
-                      key={row.issueKey}
-                      className={selectedTeam?.issueKey === row.issueKey ? "selected-row" : ""}
-                      onClick={() => setSelectedIssueKey(row.issueKey)}
+                      key={row.team}
+                      className={selectedTeam?.team === row.team ? "selected-row" : ""}
+                      onClick={() => setSelectedTeamName(row.team)}
                     >
                       <td>
                         <button className="team-link" type="button">
@@ -340,45 +464,31 @@ export default function XFNCenter() {
                         </button>
                       </td>
                       <td>
-                        <StatusPill tone={row.group === "General" ? "blue" : "purple"}>
+                        <StatusPill tone={row.group === "Actions" ? "blue" : "purple"}>
                           {row.group}
                         </StatusPill>
                       </td>
-                      <td>{row.goal}</td>
+                      <td>{previewText(row.sprintGoal)}</td>
+                      <td>{previewText(row.currentProgress)}</td>
                       <td>
-                        <StatusPill tone={row.met ? "green" : "red"}>
-                          {row.met ? "Yes" : "No"}
-                          <ChevronDown size={13} />
-                        </StatusPill>
-                      </td>
-                      <td>
-                        {row.risks.length ? (
-                          row.risks.map((risk) => (
-                            <span className="inline-risk" key={risk}>
-                              <Dot tone="orange" />
-                              {risk}
-                            </span>
-                          ))
+                        {teamHasRisks(row) ? (
+                          <span className="inline-risk">
+                            <Dot tone="orange" />
+                            {row.impactsOrRisks}
+                          </span>
                         ) : (
                           <span className="empty-cell">—</span>
                         )}
                       </td>
                       <td>
-                        {row.needs.length ? (
-                          row.needs.map((need) => (
-                            <span className="inline-risk" key={need}>
-                              <Dot tone="orange" />
-                              {need}
-                            </span>
-                          ))
+                        {teamHasNeeds(row) ? (
+                          <span className="inline-risk">
+                            <Dot tone="orange" />
+                            {row.needsFromOtherTeams}
+                          </span>
                         ) : (
                           <span className="empty-cell">—</span>
                         )}
-                      </td>
-                      <td>
-                        <StatusPill tone={row.health === "At Risk" ? "orange" : "green"}>
-                          {row.health}
-                        </StatusPill>
                       </td>
                       <td>
                         <MoreVertical size={17} />
@@ -386,10 +496,10 @@ export default function XFNCenter() {
                     </tr>
                   ))}
 
-                  {!loading && dashboard.teams.length === 0 ? (
+                  {pageTeams.length === 0 ? (
                     <tr>
-                      <td className="empty-cell" colSpan="8">
-                        No Jira issues matched this project and sprint selection.
+                      <td className="empty-cell" colSpan="7">
+                        No teams match the current filters.
                       </td>
                     </tr>
                   ) : null}
@@ -399,116 +509,145 @@ export default function XFNCenter() {
 
             <footer className="table-footer">
               <span>
-                {loading ? "Loading Jira issues..." : `Showing ${dashboard.teams.length} live Jira issues`}
+                {filteredTeams.length === 0
+                  ? "0 teams"
+                  : `${(currentPage - 1) * PAGE_SIZE + 1}-${Math.min(currentPage * PAGE_SIZE, filteredTeams.length)} of ${filteredTeams.length} teams`}
               </span>
               <div className="pagination">
-                <button onClick={() => cycleProject(-1)} type="button">
+                <button
+                  disabled={currentPage === 1}
+                  onClick={() => setPage((value) => Math.max(1, value - 1))}
+                  type="button"
+                >
                   <ChevronLeft size={17} />
                 </button>
                 <button className="active-page" type="button">
-                  {project || "—"}
+                  {currentPage}
                 </button>
-                <button onClick={() => cycleProject(1)} type="button">
+                <button
+                  disabled={currentPage === totalPages}
+                  onClick={() => setPage((value) => Math.min(totalPages, value + 1))}
+                  type="button"
+                >
                   <ChevronRight size={17} />
                 </button>
               </div>
             </footer>
           </article>
 
-          <article className="panel detail-panel">
-            <div className="detail-header">
-              <div>
-                <h2>{selectedTeam?.team || "No Team Selected"}</h2>
-                <StatusPill tone={selectedTeam?.health === "At Risk" ? "orange" : "green"}>
-                  {selectedTeam?.health || "Waiting for Jira"}
-                </StatusPill>
-              </div>
-              <ChevronUp size={19} />
-            </div>
-
-            <div className="details-grid">
-              <div className="details-stack">
-                <DetailItem
-                  icon={Shield}
-                  tone="orange"
-                  title={`Risk Alert: ${selectedTeam?.risks?.length ? "Flagged" : "Clear"}`}
-                  body={
-                    selectedTeam?.risks?.length
-                      ? `${selectedTeam.risks.length} risk item(s) pulled from Jira`
-                      : "No Jira risk text found on this issue."
-                  }
-                />
-                <DetailItem
-                  icon={BarChart3}
-                  tone="blue"
-                  title={selectedTeam?.issueKey || "Jira Issue"}
-                  body={selectedTeam?.status || "No issue selected."}
-                />
-                <DetailItem
-                  icon={Target}
-                  tone="green"
-                  title="Sprint Goal"
-                  body={selectedTeam?.goal || "No sprint goal found."}
-                />
-                <DetailItem
-                  icon={CalendarDays}
-                  tone="blue"
-                  title="Sprint Coverage"
-                  body={selectedTeam?.sprints?.join(", ") || "No sprint value on this issue."}
-                />
+          {selectedTeam ? (
+            <article className="panel detail-panel">
+              <div className="detail-header">
+                <div>
+                  <h2>{selectedTeam.team}</h2>
+                  <StatusPill tone={teamHasRisks(selectedTeam) ? "orange" : "green"}>
+                    {teamHasRisks(selectedTeam) ? "Risk Flagged" : "No Risk Flagged"}
+                  </StatusPill>
+                </div>
+                <ChevronUp size={19} />
               </div>
 
-              <div className="details-stack">
-                <DetailItem
-                  icon={Activity}
-                  tone="green"
-                  title="Current Progress"
-                  body={selectedTeam?.details?.progress || "No delivery progress provided."}
-                />
-                <DetailItem
-                  icon={Link2}
-                  tone="orange"
-                  title="Impediments"
-                  body={selectedTeam?.needs?.join(" | ") || "No blockers or dependencies found."}
-                />
-                <DetailItem
-                  icon={Users}
-                  tone="purple"
-                  title="Need From Other Teams"
-                  body={selectedTeam?.details?.pmUpdate || "No PM update provided in Jira."}
-                />
+              <div className="details-grid">
+                <div className="details-stack">
+                  <DetailItem
+                    icon={Shield}
+                    tone={teamHasRisks(selectedTeam) ? "orange" : "green"}
+                    title="What We Care About"
+                    body="This view tracks the teams named in the XFN sync doc and the fields that matter there: owners, sprint goal, current progress, upcoming work, impacts or risks, and needs from other teams."
+                  />
+                  <DetailItem
+                    icon={BarChart3}
+                    tone="blue"
+                    title="Group"
+                    body={selectedTeam.group}
+                  />
+                  <DetailItem
+                    icon={Target}
+                    tone="green"
+                    title="Editable Team View"
+                    body="Edits here are real UI state, not values copied from the PDF, and they persist locally in your browser."
+                  />
+                  <DetailItem
+                    icon={CalendarDays}
+                    tone="blue"
+                    title="Sprint Iteration"
+                    body={view.sprint}
+                  />
+                </div>
 
-                <div className="confidence">
-                  <div className="detail-icon detail-green">
-                    <Smile size={19} />
-                  </div>
-                  <div>
-                    <h4>Assignee</h4>
-                    <div className="radio-row">
-                      <label>
-                        <input checked readOnly type="radio" />
-                        <span>{selectedTeam?.assignee || "Unassigned"}</span>
-                      </label>
+                <div className="details-stack">
+                  <DetailItem
+                    icon={Activity}
+                    tone="green"
+                    title="Last Updated"
+                    body={selectedTeam.updatedAt ? formatSyncTime(selectedTeam.updatedAt) : "No edits yet"}
+                  />
+                  <DetailItem
+                    icon={Link2}
+                    tone="orange"
+                    title="Issue Linkage"
+                    body={selectedTeam.issueKey || "No issue key entered yet"}
+                  />
+                  <DetailItem
+                    icon={Users}
+                    tone="purple"
+                    title="Owners"
+                    body={`PM: ${selectedTeam.ownerPm || "—"} · TL: ${selectedTeam.ownerTl || "—"}`}
+                  />
+
+                  <div className="confidence">
+                    <div className="detail-icon detail-green">
+                      <Smile size={19} />
+                    </div>
+                    <div>
+                      <h4>Editable Fields</h4>
+                      <div className="radio-row">
+                        <label>
+                          <input checked readOnly type="radio" />
+                          <span>{TEAM_FIELDS.length} fields in scope</span>
+                        </label>
+                      </div>
                     </div>
                   </div>
                 </div>
               </div>
-            </div>
 
-            <footer className="detail-actions">
-              <button className="secondary-button" type="button">
-                <Plus size={16} />
-                {selectedTeam?.issueKey || "View Issue"}
-              </button>
-              <button className="primary-button" type="button">
-                {dashboard.project ? `Project ${dashboard.project}` : "Select a Project"}
-              </button>
-            </footer>
-          </article>
+              <div className="editor-grid">
+                {TEAM_FIELDS.map((field) => (
+                  <label className="editor-field" key={field.key}>
+                    <span>{field.label}</span>
+                    {field.key === "issueKey" || field.key === "ownerPm" || field.key === "ownerTl" ? (
+                      <input
+                        type="text"
+                        value={selectedTeam[field.key]}
+                        onChange={(event) => updateSelectedTeamField(field.key, event.target.value)}
+                      />
+                    ) : (
+                      <textarea
+                        rows={4}
+                        value={selectedTeam[field.key]}
+                        onChange={(event) => updateSelectedTeamField(field.key, event.target.value)}
+                      />
+                    )}
+                  </label>
+                ))}
+              </div>
+
+              <footer className="detail-actions">
+                <button className="secondary-button" onClick={resetSelectedTeam} type="button">
+                  <Plus size={16} />
+                  Reset Team
+                </button>
+                <button className="primary-button" onClick={() => setLastRefresh(new Date().toISOString())} type="button">
+                  Save Fields
+                </button>
+              </footer>
+            </article>
+          ) : null}
         </section>
 
         <aside className="metrics-column">
-          {dashboard.metrics.map((metric) => (
+          {metrics.map((metric) => (
             <MetricCard key={metric.label} metric={metric} />
           ))}
         </aside>

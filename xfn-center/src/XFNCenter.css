@@ -46,7 +46,9 @@ body {
 }
 
 button,
-input {
+input,
+select,
+textarea {
   font: inherit;
 }
 
@@ -217,6 +219,14 @@ h1 {
   white-space: nowrap;
 }
 
+.search-box input {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+}
+
 .filter {
   min-width: 0;
   height: 54px;
@@ -244,6 +254,16 @@ h1 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.filter-select select {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  padding: 0;
+  appearance: none;
 }
 
 .save-button {
@@ -440,6 +460,11 @@ tbody tr:last-child td {
   color: #334155;
 }
 
+.pagination button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
 .pagination .active-page {
   background: var(--blue-soft);
   color: var(--blue);
@@ -605,6 +630,41 @@ tbody tr:last-child td {
   margin-top: 36px;
 }
 
+.editor-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 28px;
+}
+
+.editor-field {
+  display: grid;
+  gap: 8px;
+}
+
+.editor-field span {
+  font-size: 13px;
+  font-weight: 700;
+  color: #334155;
+}
+
+.editor-field input,
+.editor-field textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fbfdff;
+  color: var(--text);
+  padding: 12px 14px;
+  resize: vertical;
+}
+
+.editor-field input:focus,
+.editor-field textarea:focus {
+  outline: 2px solid rgba(37, 99, 235, 0.18);
+  border-color: #8db3ff;
+}
+
 .secondary-button,
 .primary-button {
   height: 42px;
@@ -670,6 +730,10 @@ tbody tr:last-child td {
   .details-grid {
     grid-template-columns: 1fr;
     gap: 24px;
+  }
+
+  .editor-grid {
+    grid-template-columns: 1fr;
   }
 }
 
