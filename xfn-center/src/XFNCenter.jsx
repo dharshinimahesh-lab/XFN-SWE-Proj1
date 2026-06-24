@@ -1,116 +1,59 @@
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
+  AlertTriangle,
+  BarChart3,
   Bell,
-  Calendar,
-  ChevronDown,
-  MoreVertical,
-  Search,
-  RefreshCw,
   Bookmark,
+  Calendar,
+  CalendarDays,
+  CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
+  Link2,
+  MoreVertical,
+  Plus,
+  RefreshCw,
+  Search,
+  Shield,
+  SlidersHorizontal,
+  Smile,
+  Target,
+  Users,
+  Activity,
+} from "lucide-react";
+import "./XFNCenter.css";
+
+const metricIcons = {
   Target,
   CheckCircle2,
   AlertTriangle,
   Users,
-  Shield,
-  BarChart3,
-  CalendarDays,
-  Activity,
-  Link2,
-  Smile,
-  Plus,
-  SlidersHorizontal,
-  ChevronLeft,
-  ChevronRight,
-  ChevronUp,
-} from "lucide-react";
-import "./XFNCenter.css";
+};
 
-const teams = [
-  {
-    team: "Creative Insights",
-    group: "Insights",
-    goal: "Meta asset profile consumable...",
-    met: true,
-    risks: ["Meta SDK rate limits"],
-    needs: ["Meta repo support"],
-    health: "On Track",
-  },
-  {
-    team: "Business Insights",
-    group: "Insights",
-    goal: "Enhance setup prompt for gene...",
-    met: false,
-    risks: ["PTO next week"],
-    needs: [],
-    health: "At Risk",
-  },
-  {
-    team: "Audience Planner",
-    group: "Insights",
-    goal: "Implement Snapshot reach curre...",
-    met: true,
-    risks: [],
-    needs: [],
-    health: "On Track",
-  },
-  {
-    team: "Data Library",
-    group: "Data",
-    goal: "Add new data tables for Prime Day...",
-    met: true,
-    risks: ["Walmart data erroring"],
-    needs: [],
-    health: "At Risk",
-  },
-  {
-    team: "GenAaaS",
-    group: "Data",
-    goal: "Dual-SIM optimizations & stability...",
-    met: false,
-    risks: ["OOM risk"],
-    needs: ["USA API"],
-    health: "At Risk",
-  },
-];
+const initialData = {
+  teams: [],
+  metrics: [],
+  sprints: [],
+  lastSync: null,
+  project: "",
+};
 
-const metrics = [
-  {
-    label: "Sprint Goals",
-    value: "14",
-    sub: "tracked",
-    delta: "↑ 2 from last sprint",
-    tone: "blue",
-    icon: Target,
-  },
-  {
-    label: "Goals Met",
-    value: "9 / 14",
-    sub: "64%",
-    delta: "↑ 11% from last sprint",
-    tone: "green",
-    icon: CheckCircle2,
-  },
-  {
-    label: "Open Risks",
-    value: "6",
-    sub: "high",
-    delta: "↓ 1 from last sprint",
-    tone: "orange",
-    icon: AlertTriangle,
-  },
-  {
-    label: "Unfulfilled Needs",
-    value: "11",
-    sub: "dependencies",
-    delta: "— same as last sprint",
-    tone: "purple",
-    icon: Users,
-  },
-];
+function formatSyncTime(value) {
+  if (!value) {
+    return "Awaiting first sync";
+  }
 
-function Filter({ label, value }) {
+  return new Intl.DateTimeFormat("en-US", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
+}
+
+function Filter({ label, value, onClick }) {
   return (
-    <button className="filter">
+    <button className="filter" onClick={onClick} type="button">
       <span>
         <small>{label}</small>
         <strong>{value}</strong>
@@ -129,7 +72,7 @@ function Dot({ tone = "orange" }) {
 }
 
 function MetricCard({ metric }) {
-  const Icon = metric.icon;
+  const Icon = metricIcons[metric.icon] || Target;
 
   return (
     <article className="metric-card">
@@ -163,8 +106,130 @@ function DetailItem({ icon: Icon, title, body, tone }) {
   );
 }
 
+async function fetchJson(path, options) {
+  const response = await fetch(path, options);
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body || `Request failed with status ${response.status}`);
+  }
+  return response.json();
+}
+
 export default function XFNCenter() {
-  const [selectedTeam, setSelectedTeam] = useState("Creative Insights");
+  const [projects, setProjects] = useState([]);
+  const [dashboard, setDashboard] = useState(initialData);
+  const [project, setProject] = useState("");
+  const [sprint, setSprint] = useState("");
+  const [selectedIssueKey, setSelectedIssueKey] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [error, setError] = useState("");
+
+  const selectedTeam = useMemo(
+    () =>
+      dashboard.teams.find((row) => row.issueKey === selectedIssueKey) || dashboard.teams[0] || null,
+    [dashboard.teams, selectedIssueKey],
+  );
+
+  useEffect(() => {
+    let active = true;
+
+    fetchJson("/api/projects")
+      .then((payload) => {
+        if (!active) {
+          return;
+        }
+        setProjects(payload.projects || []);
+        setProject((currentProject) => {
+          if (currentProject) {
+            return currentProject;
+          }
+          return payload.defaultProject || payload.projects?.[0]?.key || "";
+        });
+      })
+      .catch((fetchError) => {
+        if (active) {
+          setError(fetchError.message);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!project) {
+      return;
+    }
+
+    const params = new URLSearchParams({ project });
+    if (sprint) {
+      params.set("sprint", sprint);
+    }
+
+    setLoading(true);
+    setError("");
+
+    fetchJson(`/api/dashboard?${params.toString()}`)
+      .then((payload) => {
+        setDashboard(payload);
+        setSelectedIssueKey(payload.teams?.[0]?.issueKey || "");
+      })
+      .catch((fetchError) => {
+        setError(fetchError.message);
+      })
+      .finally(() => {
+        setLoading(false);
+      });
+  }, [project, sprint]);
+
+  async function handleSync() {
+    if (!project) {
+      return;
+    }
+
+    setSyncing(true);
+    setError("");
+
+    try {
+      const payload = await fetchJson("/api/sync", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ project, sprint }),
+      });
+      setDashboard(payload);
+      setSelectedIssueKey(payload.teams?.[0]?.issueKey || "");
+    } catch (fetchError) {
+      setError(fetchError.message);
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  function cycleProject(direction) {
+    if (!projects.length) {
+      return;
+    }
+
+    const currentIndex = projects.findIndex((item) => item.key === project);
+    const nextIndex = (currentIndex + direction + projects.length) % projects.length;
+    setSprint("");
+    setProject(projects[nextIndex].key);
+  }
+
+  function cycleSprint(direction) {
+    if (!dashboard.sprints.length) {
+      return;
+    }
+
+    const options = ["", ...dashboard.sprints];
+    const currentIndex = options.indexOf(sprint);
+    const nextIndex = (currentIndex + direction + options.length) % options.length;
+    setSprint(options[nextIndex]);
+  }
 
   return (
     <main className="xfn-page">
@@ -175,50 +240,70 @@ export default function XFNCenter() {
         </div>
 
         <div className="topbar-actions">
-          <button className="sprint-picker">
+          <button className="sprint-picker" onClick={() => cycleSprint(1)} type="button">
             <span>Sprint:</span>
-            <strong>2026-06-08</strong>
+            <strong>{sprint || "All"}</strong>
             <ChevronDown size={16} />
             <Calendar size={18} />
           </button>
 
-          <span className="sync-meta">Last sync: Jun 8, 2026 · 10:42 AM</span>
+          <span className="sync-meta">Last sync: {formatSyncTime(dashboard.lastSync)}</span>
 
-          <button className="ghost-button">
+          <button className="ghost-button" onClick={handleSync} type="button">
             <RefreshCw size={16} />
-            Sync Now
+            {syncing ? "Syncing..." : "Sync Now"}
           </button>
 
-          <button className="icon-button notification-button">
+          <button className="icon-button notification-button" type="button">
             <Bell size={20} />
-            <span>2</span>
+            <span>{dashboard.teams.length}</span>
           </button>
 
-          <button className="avatar">KH</button>
+          <button className="avatar" type="button">
+            JR
+          </button>
         </div>
       </header>
 
       <section className="filters-row">
         <label className="search-box">
-          <span>Search keywords: Walmart, Meta, Prime Days...</span>
+          <span>{project ? `Live Jira project: ${project}` : "Loading Jira projects..."}</span>
           <Search size={19} />
         </label>
 
-        <Filter label="Scrum Team" value="All" />
-        <Filter label="All Group" value="All" />
-        <Filter label="Sprint Iteration" value="2026-06-08" />
-        <Filter label="Risk Level" value="All" />
-        <Filter label="Sort By" value="Group" />
+        <Filter
+          label="Project"
+          value={project || "Loading"}
+          onClick={() => cycleProject(1)}
+        />
+        <Filter
+          label="Sprint"
+          value={sprint || "All"}
+          onClick={() => cycleSprint(1)}
+        />
+        <Filter
+          label="Selected Team"
+          value={selectedTeam?.team || "None"}
+          onClick={() => {}}
+        />
+        <Filter
+          label="Risk Level"
+          value={selectedTeam?.risks?.length ? "Flagged" : "Clear"}
+          onClick={() => {}}
+        />
+        <Filter label="Sort By" value="Updated" onClick={() => {}} />
 
-        <button className="icon-button">
+        <button className="icon-button" type="button">
           <SlidersHorizontal size={20} />
         </button>
 
-        <button className="save-button">
+        <button className="save-button" type="button">
           <Bookmark size={17} />
-          Save View
+          Live View
         </button>
       </section>
+
+      {error ? <p className="empty-cell">Jira error: {error}</p> : null}
 
       <div className="dashboard-grid">
         <section className="main-column">
@@ -243,17 +328,19 @@ export default function XFNCenter() {
                 </thead>
 
                 <tbody>
-                  {teams.map((row) => (
+                  {dashboard.teams.map((row) => (
                     <tr
-                      key={row.team}
-                      className={selectedTeam === row.team ? "selected-row" : ""}
-                      onClick={() => setSelectedTeam(row.team)}
+                      key={row.issueKey}
+                      className={selectedTeam?.issueKey === row.issueKey ? "selected-row" : ""}
+                      onClick={() => setSelectedIssueKey(row.issueKey)}
                     >
                       <td>
-                        <button className="team-link">{row.team}</button>
+                        <button className="team-link" type="button">
+                          {row.team}
+                        </button>
                       </td>
                       <td>
-                        <StatusPill tone={row.group === "Data" ? "blue" : "purple"}>
+                        <StatusPill tone={row.group === "General" ? "blue" : "purple"}>
                           {row.group}
                         </StatusPill>
                       </td>
@@ -268,7 +355,7 @@ export default function XFNCenter() {
                         {row.risks.length ? (
                           row.risks.map((risk) => (
                             <span className="inline-risk" key={risk}>
-                              <Dot tone={risk === "OOM risk" ? "red" : "orange"} />
+                              <Dot tone="orange" />
                               {risk}
                             </span>
                           ))
@@ -289,7 +376,7 @@ export default function XFNCenter() {
                         )}
                       </td>
                       <td>
-                        <StatusPill tone={row.health === "On Track" ? "green" : "orange"}>
+                        <StatusPill tone={row.health === "At Risk" ? "orange" : "green"}>
                           {row.health}
                         </StatusPill>
                       </td>
@@ -298,20 +385,30 @@ export default function XFNCenter() {
                       </td>
                     </tr>
                   ))}
+
+                  {!loading && dashboard.teams.length === 0 ? (
+                    <tr>
+                      <td className="empty-cell" colSpan="8">
+                        No Jira issues matched this project and sprint selection.
+                      </td>
+                    </tr>
+                  ) : null}
                 </tbody>
               </table>
             </div>
 
             <footer className="table-footer">
-              <span>1–5 of 10 teams selected</span>
+              <span>
+                {loading ? "Loading Jira issues..." : `Showing ${dashboard.teams.length} live Jira issues`}
+              </span>
               <div className="pagination">
-                <button>
+                <button onClick={() => cycleProject(-1)} type="button">
                   <ChevronLeft size={17} />
                 </button>
-                <button className="active-page">1</button>
-                <button>2</button>
-                <button>3</button>
-                <button>
+                <button className="active-page" type="button">
+                  {project || "—"}
+                </button>
+                <button onClick={() => cycleProject(1)} type="button">
                   <ChevronRight size={17} />
                 </button>
               </div>
@@ -321,8 +418,10 @@ export default function XFNCenter() {
           <article className="panel detail-panel">
             <div className="detail-header">
               <div>
-                <h2>Creative Insights</h2>
-                <StatusPill tone="green">On Track</StatusPill>
+                <h2>{selectedTeam?.team || "No Team Selected"}</h2>
+                <StatusPill tone={selectedTeam?.health === "At Risk" ? "orange" : "green"}>
+                  {selectedTeam?.health || "Waiting for Jira"}
+                </StatusPill>
               </div>
               <ChevronUp size={19} />
             </div>
@@ -332,26 +431,30 @@ export default function XFNCenter() {
                 <DetailItem
                   icon={Shield}
                   tone="orange"
-                  title="Risk Alert: Medium"
-                  body="1 risk identified"
+                  title={`Risk Alert: ${selectedTeam?.risks?.length ? "Flagged" : "Clear"}`}
+                  body={
+                    selectedTeam?.risks?.length
+                      ? `${selectedTeam.risks.length} risk item(s) pulled from Jira`
+                      : "No Jira risk text found on this issue."
+                  }
                 />
                 <DetailItem
                   icon={BarChart3}
                   tone="blue"
-                  title="Product Update"
-                  body="JIRA-2891 has been approved and verified."
+                  title={selectedTeam?.issueKey || "Jira Issue"}
+                  body={selectedTeam?.status || "No issue selected."}
                 />
                 <DetailItem
                   icon={Target}
                   tone="green"
                   title="Sprint Goal"
-                  body="Meta aggregated asset profile consumable for all owning teams to improve cross-campaign views."
+                  body={selectedTeam?.goal || "No sprint goal found."}
                 />
                 <DetailItem
                   icon={CalendarDays}
                   tone="blue"
-                  title="Upcoming Work"
-                  body="Draft setup wizard v2 with new consent flows for new markets; social rollout plan and communications."
+                  title="Sprint Coverage"
+                  body={selectedTeam?.sprints?.join(", ") || "No sprint value on this issue."}
                 />
               </div>
 
@@ -360,19 +463,19 @@ export default function XFNCenter() {
                   icon={Activity}
                   tone="green"
                   title="Current Progress"
-                  body="Fragmented insights are reducing and unifying, with manual extraction down compared to last sprint."
+                  body={selectedTeam?.details?.progress || "No delivery progress provided."}
                 />
                 <DetailItem
                   icon={Link2}
                   tone="orange"
                   title="Impediments"
-                  body="Issue with Meta & Access API for Futures SDK due to rate limitations; need support from Meta engineering."
+                  body={selectedTeam?.needs?.join(" | ") || "No blockers or dependencies found."}
                 />
                 <DetailItem
                   icon={Users}
                   tone="purple"
                   title="Need From Other Teams"
-                  body="Creative Engineering for blob access."
+                  body={selectedTeam?.details?.pmUpdate || "No PM update provided in Jira."}
                 />
 
                 <div className="confidence">
@@ -380,19 +483,12 @@ export default function XFNCenter() {
                     <Smile size={19} />
                   </div>
                   <div>
-                    <h4>Sprint Confidence</h4>
-
+                    <h4>Assignee</h4>
                     <div className="radio-row">
-                      {["High", "Medium", "Low", "Not Yet Known"].map((item) => (
-                        <label key={item}>
-                          <input
-                            type="radio"
-                            name="confidence"
-                            defaultChecked={item === "High"}
-                          />
-                          <span>{item}</span>
-                        </label>
-                      ))}
+                      <label>
+                        <input checked readOnly type="radio" />
+                        <span>{selectedTeam?.assignee || "Unassigned"}</span>
+                      </label>
                     </div>
                   </div>
                 </div>
@@ -400,17 +496,19 @@ export default function XFNCenter() {
             </div>
 
             <footer className="detail-actions">
-              <button className="secondary-button">
+              <button className="secondary-button" type="button">
                 <Plus size={16} />
-                View Audit Trail
+                {selectedTeam?.issueKey || "View Issue"}
               </button>
-              <button className="primary-button">Compare Previous Sprint</button>
+              <button className="primary-button" type="button">
+                {dashboard.project ? `Project ${dashboard.project}` : "Select a Project"}
+              </button>
             </footer>
           </article>
         </section>
 
         <aside className="metrics-column">
-          {metrics.map((metric) => (
+          {dashboard.metrics.map((metric) => (
             <MetricCard key={metric.label} metric={metric} />
           ))}
         </aside>
