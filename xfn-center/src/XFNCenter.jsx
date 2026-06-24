@@ -23,17 +23,17 @@ import {
   Users,
 } from "lucide-react";
 import "./XFNCenter.css";
-import { TEAM_CATALOG, TEAM_FIELDS, SPRINT_LABEL, createEmptyTeamData } from "./teamCatalog";
+import { TEAM_FIELDS, createEmptyTeamData } from "./teamCatalog";
 
 const PAGE_SIZE = 5;
 const VIEW_STORAGE_KEY = "xfn-center-view";
 const EDITS_STORAGE_KEY = "xfn-center-team-edits";
 
 const defaultView = {
+  boardId: "",
   search: "",
   group: "All",
   team: "All",
-  sprint: SPRINT_LABEL,
   risk: "All",
   sortBy: "Group",
 };
@@ -48,7 +48,7 @@ const metricIcons = {
 function loadSavedJson(key, fallback) {
   try {
     const saved = window.localStorage.getItem(key);
-    return saved ? JSON.parse(saved) : fallback;
+    return saved ? { ...fallback, ...JSON.parse(saved) } : fallback;
   } catch {
     return fallback;
   }
@@ -99,7 +99,6 @@ function sortTeams(teams, sortBy) {
 
     return left.group.localeCompare(right.group) || left.team.localeCompare(right.team);
   });
-
   return values;
 }
 
@@ -110,8 +109,8 @@ function FilterSelect({ label, value, options, onChange }) {
         <small>{label}</small>
         <select value={value} onChange={(event) => onChange(event.target.value)}>
           {options.map((option) => (
-            <option key={option} value={option}>
-              {option}
+            <option key={option.value ?? option} value={option.value ?? option}>
+              {option.label ?? option}
             </option>
           ))}
         </select>
@@ -136,7 +135,6 @@ function MetricCard({ metric }) {
       <div className={`metric-icon metric-${metric.tone}`}>
         <Icon size={26} />
       </div>
-
       <div>
         <h3>{metric.label}</h3>
         <div className="metric-value-row">
@@ -163,91 +161,112 @@ function DetailItem({ icon: Icon, title, body, tone }) {
   );
 }
 
-function toEditableBase(teamMeta, liveIssue) {
+function toEditableBase(issue) {
   return {
-    issueKey: liveIssue?.issueKey || teamMeta.issueKey || "",
-    ownerPm: "",
-    ownerTl: "",
-    sprintGoal: liveIssue?.goal || "",
-    currentProgress: liveIssue?.details?.progress || liveIssue?.details?.pmUpdate || "",
+    issueKey: issue.issueKey || "",
+    team: issue.team || "",
+    group: issue.group || "",
+    status: issue.status || "",
+    assignee: issue.assignee || "",
+    sprintGoal: issue.goal || "",
+    currentProgress: issue.details?.progress || issue.details?.pmUpdate || "",
     upcomingWork: "",
-    impactsOrRisks: liveIssue?.risks?.join("\n") || "",
-    needsFromOtherTeams: liveIssue?.needs?.join("\n") || "",
-    liveStatus: liveIssue?.status || "",
-    liveAssignee: liveIssue?.assignee || "",
-    liveUpdatedAt: liveIssue?.updated || "",
+    impactsOrRisks: (issue.risks || []).join("\n"),
+    needsFromOtherTeams: (issue.needs || []).join("\n"),
+    liveUpdatedAt: issue.updated || "",
   };
 }
 
 export default function XFNCenter() {
   const [view, setView] = useState(() => loadSavedJson(VIEW_STORAGE_KEY, defaultView));
-  const [teamEdits, setTeamEdits] = useState(() => loadSavedJson(EDITS_STORAGE_KEY, {}));
-  const [selectedTeamName, setSelectedTeamName] = useState(TEAM_CATALOG[0]?.team || "");
+  const [issueEdits, setIssueEdits] = useState(() => loadSavedJson(EDITS_STORAGE_KEY, {}));
+  const [boards, setBoards] = useState([]);
+  const [boardPayload, setBoardPayload] = useState({ teams: [], metrics: [], total: 0, lastSync: "" });
+  const [spaceName, setSpaceName] = useState("Alli AI & Software Engineering");
+  const [spaceKey, setSpaceKey] = useState("ALLI");
+  const [selectedIssueKey, setSelectedIssueKey] = useState("");
   const [page, setPage] = useState(1);
   const [saveState, setSaveState] = useState("Save View");
-  const [liveIssuesByKey, setLiveIssuesByKey] = useState({});
-  const [lastRefresh, setLastRefresh] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [loadingBoards, setLoadingBoards] = useState(true);
+  const [loadingBoard, setLoadingBoard] = useState(false);
   const [error, setError] = useState("");
-
-  const issueKeysToFetch = useMemo(
-    () =>
-      TEAM_CATALOG.map((team) => teamEdits[team.team]?.issueKey || team.issueKey)
-        .filter(Boolean)
-        .join(","),
-    [teamEdits],
-  );
+  const [refreshToken, setRefreshToken] = useState(0);
 
   useEffect(() => {
     window.localStorage.setItem(VIEW_STORAGE_KEY, JSON.stringify(view));
   }, [view]);
 
   useEffect(() => {
-    window.localStorage.setItem(EDITS_STORAGE_KEY, JSON.stringify(teamEdits));
-  }, [teamEdits]);
+    window.localStorage.setItem(EDITS_STORAGE_KEY, JSON.stringify(issueEdits));
+  }, [issueEdits]);
 
   useEffect(() => {
-    setLoading(true);
-    setError("");
-
-    fetchJson(`/api/issues?keys=${encodeURIComponent(issueKeysToFetch)}`)
+    setLoadingBoards(true);
+    fetchJson("/api/boards")
       .then((payload) => {
-        setLiveIssuesByKey(payload.issues || {});
-        setLastRefresh(payload.lastSync || new Date().toISOString());
+        const nextBoards = payload.boards || [];
+        setBoards(nextBoards);
+        setSpaceName(payload.spaceProjectName || "Alli AI & Software Engineering");
+        setSpaceKey(payload.spaceProjectKey || "ALLI");
+        setView((current) => ({
+          ...current,
+          boardId: current.boardId || String(nextBoards[0]?.id || ""),
+        }));
       })
-      .catch((fetchError) => {
-        setError(fetchError.message);
+      .catch((fetchError) => setError(fetchError.message))
+      .finally(() => setLoadingBoards(false));
+  }, []);
+
+  useEffect(() => {
+    if (!view.boardId) {
+      return;
+    }
+
+    setLoadingBoard(true);
+    setError("");
+    fetchJson(`/api/board?boardId=${encodeURIComponent(view.boardId)}&maxResults=200`)
+      .then((payload) => {
+        setBoardPayload(payload);
+        setSpaceName(payload.spaceProjectName || spaceName);
+        setSpaceKey(payload.spaceProjectKey || spaceKey);
+        setSelectedIssueKey(payload.teams?.[0]?.issueKey || "");
       })
-      .finally(() => {
-        setLoading(false);
-      });
-  }, [issueKeysToFetch]);
+      .catch((fetchError) => setError(fetchError.message))
+      .finally(() => setLoadingBoard(false));
+  }, [view.boardId, refreshToken]);
 
   const teams = useMemo(
     () =>
-      TEAM_CATALOG.map((teamMeta) => {
-        const liveIssue = liveIssuesByKey[teamMeta.issueKey] || null;
-        const base = toEditableBase(teamMeta, liveIssue);
-        const edits = teamEdits[teamMeta.team] || {};
+      (boardPayload.teams || []).map((issue) => {
+        const base = toEditableBase(issue);
+        const edits = issueEdits[issue.issueKey] || {};
         return {
-          ...teamMeta,
+          storageKey: issue.issueKey,
           ...base,
           ...edits,
         };
       }),
-    [liveIssuesByKey, teamEdits],
+    [boardPayload.teams, issueEdits],
+  );
+
+  const boardOptions = useMemo(
+    () =>
+      boards.map((board) => ({
+        value: String(board.id),
+        label: `${board.name} (${board.type})`,
+      })),
+    [boards],
   );
 
   const groupOptions = useMemo(
-    () => ["All", ...new Set(TEAM_CATALOG.map((team) => team.group))],
-    [],
+    () => ["All", ...new Set(teams.map((team) => team.group).filter(Boolean))],
+    [teams],
   );
 
   const teamOptions = useMemo(() => {
-    const scopedTeams =
-      view.group === "All" ? TEAM_CATALOG : TEAM_CATALOG.filter((team) => team.group === view.group);
+    const scopedTeams = view.group === "All" ? teams : teams.filter((team) => team.group === view.group);
     return ["All", ...scopedTeams.map((team) => team.team)];
-  }, [view.group]);
+  }, [teams, view.group]);
 
   const filteredTeams = useMemo(() => {
     const search = view.search.trim().toLowerCase();
@@ -257,36 +276,29 @@ export default function XFNCenter() {
         if (view.group !== "All" && team.group !== view.group) {
           return false;
         }
-
         if (view.team !== "All" && team.team !== view.team) {
           return false;
         }
-
         if (view.risk === "Flagged" && !teamHasRisks(team)) {
           return false;
         }
-
         if (view.risk === "Clear" && teamHasRisks(team)) {
           return false;
         }
-
         if (!search) {
           return true;
         }
-
         return [
+          team.issueKey,
           team.team,
           team.group,
-          team.issueKey,
-          team.ownerPm,
-          team.ownerTl,
+          team.status,
+          team.assignee,
           team.sprintGoal,
           team.currentProgress,
           team.upcomingWork,
           team.impactsOrRisks,
           team.needsFromOtherTeams,
-          team.liveStatus,
-          team.liveAssignee,
         ]
           .join(" ")
           .toLowerCase()
@@ -298,64 +310,67 @@ export default function XFNCenter() {
 
   useEffect(() => {
     setPage(1);
-  }, [view]);
+  }, [view.search, view.group, view.team, view.risk, view.sortBy, view.boardId]);
 
   useEffect(() => {
-    if (!filteredTeams.some((team) => team.team === selectedTeamName)) {
-      setSelectedTeamName(filteredTeams[0]?.team || TEAM_CATALOG[0]?.team || "");
+    if (!filteredTeams.some((team) => team.storageKey === selectedIssueKey)) {
+      setSelectedIssueKey(filteredTeams[0]?.storageKey || "");
     }
-  }, [filteredTeams, selectedTeamName]);
+  }, [filteredTeams, selectedIssueKey]);
 
   const totalPages = Math.max(1, Math.ceil(filteredTeams.length / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
   const pageTeams = filteredTeams.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
 
   const selectedTeam =
-    filteredTeams.find((team) => team.team === selectedTeamName) ||
-    teams.find((team) => team.team === selectedTeamName) ||
-    teams[0];
+    filteredTeams.find((team) => team.storageKey === selectedIssueKey) ||
+    teams.find((team) => team.storageKey === selectedIssueKey) ||
+    teams[0] ||
+    null;
 
   const metrics = useMemo(() => {
-    const pulledTeams = teams.filter((team) => team.liveUpdatedAt).length;
-    const goalsSet = teams.filter((team) => team.sprintGoal.trim()).length;
+    if (boardPayload.metrics?.length) {
+      return boardPayload.metrics;
+    }
+
     const riskTeams = teams.filter((team) => teamHasRisks(team)).length;
-    const ownersSet = teams.filter((team) => team.ownerPm.trim() || team.ownerTl.trim()).length;
+    const needsTeams = teams.filter((team) => teamHasNeeds(team)).length;
 
     return [
       {
-        label: "Tracked Teams",
+        label: "Board Issues",
         value: String(filteredTeams.length),
-        sub: "in scope",
-        delta: "Rostered from the XFN sync doc",
+        sub: "loaded",
+        delta: "Current board scope",
         tone: "blue",
         icon: "Target",
       },
       {
-        label: "Live Pulled",
-        value: `${pulledTeams} / ${teams.length}`,
-        sub: "teams",
-        delta: "Hydrated from Jira by issue key",
+        label: "Editable Issues",
+        value: String(teams.length),
+        sub: "rows",
+        delta: "Live issues with editable overlays",
         tone: "green",
         icon: "CheckCircle2",
       },
       {
         label: "Risk Notes",
         value: String(riskTeams),
-        sub: "teams",
+        sub: "issues",
         delta: "Pulled or edited",
         tone: "orange",
         icon: "AlertTriangle",
       },
       {
-        label: "Owners Set",
-        value: String(ownersSet),
-        sub: "teams",
-        delta: "Editable by teams",
+        label: "Needs Logged",
+        value: String(needsTeams),
+        sub: "issues",
+        delta: "Pulled or edited",
         tone: "purple",
         icon: "Users",
       },
     ];
-  }, [filteredTeams.length, teams]);
+  }, [boardPayload.metrics, filteredTeams.length, teams]);
 
   function updateView(key, value) {
     setView((current) => ({ ...current, [key]: value }));
@@ -366,42 +381,25 @@ export default function XFNCenter() {
       return;
     }
 
-    setTeamEdits((current) => ({
+    setIssueEdits((current) => ({
       ...current,
-      [selectedTeam.team]: {
-        ...(current[selectedTeam.team] || {}),
+      [selectedTeam.storageKey]: {
+        ...(current[selectedTeam.storageKey] || createEmptyTeamData()),
         [field]: value,
       },
     }));
   }
 
-  function resetSelectedTeamOverrides() {
+  function resetSelectedIssueOverrides() {
     if (!selectedTeam) {
       return;
     }
 
-    setTeamEdits((current) => {
+    setIssueEdits((current) => {
       const next = { ...current };
-      delete next[selectedTeam.team];
+      delete next[selectedTeam.storageKey];
       return next;
     });
-  }
-
-  function refreshLiveData() {
-    setLoading(true);
-    setError("");
-
-    fetchJson(`/api/issues?keys=${encodeURIComponent(issueKeysToFetch)}`)
-      .then((payload) => {
-        setLiveIssuesByKey(payload.issues || {});
-        setLastRefresh(payload.lastSync || new Date().toISOString());
-      })
-      .catch((fetchError) => {
-        setError(fetchError.message);
-      })
-      .finally(() => {
-        setLoading(false);
-      });
   }
 
   return (
@@ -414,16 +412,22 @@ export default function XFNCenter() {
 
         <div className="topbar-actions">
           <div className="sprint-picker">
-            <span>Sprint:</span>
-            <strong>{view.sprint}</strong>
+            <span>Space:</span>
+            <strong>{spaceKey}</strong>
             <Calendar size={18} />
           </div>
 
-          <span className="sync-meta">Last Jira pull: {formatSyncTime(lastRefresh)}</span>
+          <div className="sprint-picker">
+            <span>Board:</span>
+            <strong>{boards.find((board) => String(board.id) === view.boardId)?.name || "Loading"}</strong>
+            <Calendar size={18} />
+          </div>
 
-          <button className="ghost-button" onClick={refreshLiveData} type="button">
+          <span className="sync-meta">Last Jira pull: {formatSyncTime(boardPayload.lastSync)}</span>
+
+          <button className="ghost-button" onClick={() => setRefreshToken((value) => value + 1)} type="button">
             <RefreshCw size={16} />
-            {loading ? "Pulling..." : "Pull Live Data"}
+            {loadingBoard ? "Pulling..." : "Pull Live Data"}
           </button>
 
           <button className="icon-button notification-button" type="button">
@@ -440,8 +444,8 @@ export default function XFNCenter() {
       <section className="filters-row">
         <label className="search-box">
           <input
-            aria-label="Search teams"
-            placeholder="Search teams, owners, goals, risks, needs..."
+            aria-label="Search issues"
+            placeholder={`Search ${spaceKey} issues, teams, assignees, goals, risks...`}
             type="text"
             value={view.search}
             onChange={(event) => updateView("search", event.target.value)}
@@ -450,7 +454,13 @@ export default function XFNCenter() {
         </label>
 
         <FilterSelect
-          label="Scrum Team"
+          label={`${spaceKey} Board`}
+          value={view.boardId}
+          options={boardOptions}
+          onChange={(value) => updateView("boardId", value)}
+        />
+        <FilterSelect
+          label="Team"
           value={view.team}
           options={teamOptions}
           onChange={(value) => updateView("team", value)}
@@ -466,17 +476,11 @@ export default function XFNCenter() {
               team:
                 current.team !== "All" &&
                 value !== "All" &&
-                !TEAM_CATALOG.some((team) => team.group === value && team.team === current.team)
+                !teams.some((team) => team.group === value && team.team === current.team)
                   ? "All"
                   : current.team,
             }));
           }}
-        />
-        <FilterSelect
-          label="Sprint Iteration"
-          value={view.sprint}
-          options={[SPRINT_LABEL]}
-          onChange={(value) => updateView("sprint", value)}
         />
         <FilterSelect
           label="Risk Level"
@@ -491,7 +495,7 @@ export default function XFNCenter() {
           onChange={(value) => updateView("sortBy", value)}
         />
 
-        <button className="icon-button" onClick={() => setView(defaultView)} type="button">
+        <button className="icon-button" onClick={() => setView((current) => ({ ...defaultView, boardId: current.boardId }))} type="button">
           <SlidersHorizontal size={20} />
         </button>
 
@@ -509,48 +513,48 @@ export default function XFNCenter() {
         </button>
       </section>
 
+      {loadingBoards ? <p className="empty-cell">Loading {spaceName} boards...</p> : null}
       {error ? <p className="empty-cell">Jira error: {error}</p> : null}
 
       <div className="dashboard-grid">
         <section className="main-column">
           <article className="panel">
             <div className="panel-header">
-              <h2>Team Progress Grid</h2>
+              <h2>Board Issues</h2>
             </div>
 
             <div className="table-wrap">
               <table>
                 <thead>
                   <tr>
+                    <th>Issue</th>
                     <th>Team</th>
                     <th>Group</th>
                     <th>Sprint Goal</th>
-                    <th>Current Progress</th>
                     <th>Risks</th>
                     <th>Needs</th>
                     <th />
                   </tr>
                 </thead>
-
                 <tbody>
                   {pageTeams.map((row) => (
                     <tr
-                      key={row.team}
-                      className={selectedTeam?.team === row.team ? "selected-row" : ""}
-                      onClick={() => setSelectedTeamName(row.team)}
+                      key={row.storageKey}
+                      className={selectedTeam?.storageKey === row.storageKey ? "selected-row" : ""}
+                      onClick={() => setSelectedIssueKey(row.storageKey)}
                     >
                       <td>
                         <button className="team-link" type="button">
-                          {row.team}
+                          {row.issueKey}
                         </button>
                       </td>
+                      <td>{previewText(row.team)}</td>
                       <td>
-                        <StatusPill tone={row.group === "Actions" ? "blue" : "purple"}>
-                          {row.group}
+                        <StatusPill tone={row.group === "General" ? "blue" : "purple"}>
+                          {previewText(row.group)}
                         </StatusPill>
                       </td>
                       <td>{previewText(row.sprintGoal)}</td>
-                      <td>{previewText(row.currentProgress)}</td>
                       <td>
                         {teamHasRisks(row) ? (
                           <span className="inline-risk">
@@ -576,11 +580,10 @@ export default function XFNCenter() {
                       </td>
                     </tr>
                   ))}
-
                   {pageTeams.length === 0 ? (
                     <tr>
                       <td className="empty-cell" colSpan="7">
-                        No teams match the current filters.
+                        No issues match the current board and filters.
                       </td>
                     </tr>
                   ) : null}
@@ -591,8 +594,8 @@ export default function XFNCenter() {
             <footer className="table-footer">
               <span>
                 {filteredTeams.length === 0
-                  ? "0 teams"
-                  : `${(currentPage - 1) * PAGE_SIZE + 1}-${Math.min(currentPage * PAGE_SIZE, filteredTeams.length)} of ${filteredTeams.length} teams`}
+                  ? "0 issues"
+                  : `${(currentPage - 1) * PAGE_SIZE + 1}-${Math.min(currentPage * PAGE_SIZE, filteredTeams.length)} of ${filteredTeams.length} loaded issues`}
               </span>
               <div className="pagination">
                 <button
@@ -620,7 +623,7 @@ export default function XFNCenter() {
             <article className="panel detail-panel">
               <div className="detail-header">
                 <div>
-                  <h2>{selectedTeam.team}</h2>
+                  <h2>{selectedTeam.issueKey || selectedTeam.team || "Issue"}</h2>
                   <StatusPill tone={teamHasRisks(selectedTeam) ? "orange" : "green"}>
                     {teamHasRisks(selectedTeam) ? "Risk Flagged" : "No Risk Flagged"}
                   </StatusPill>
@@ -634,24 +637,10 @@ export default function XFNCenter() {
                     icon={Shield}
                     tone={teamHasRisks(selectedTeam) ? "orange" : "green"}
                     title="Pulled Live"
-                    body={
-                      selectedTeam.liveUpdatedAt
-                        ? `Jira data loaded for ${selectedTeam.issueKey || selectedTeam.team}.`
-                        : "No linked live Jira issue was found for this team yet."
-                    }
+                    body={selectedTeam.liveUpdatedAt ? `Jira data loaded for ${selectedTeam.issueKey}.` : "No live issue data loaded."}
                   />
-                  <DetailItem
-                    icon={BarChart3}
-                    tone="blue"
-                    title="Live Status"
-                    body={selectedTeam.liveStatus || "No live status available"}
-                  />
-                  <DetailItem
-                    icon={Target}
-                    tone="green"
-                    title="Live Assignee"
-                    body={selectedTeam.liveAssignee || "No live assignee available"}
-                  />
+                  <DetailItem icon={BarChart3} tone="blue" title="Status" body={previewText(selectedTeam.status)} />
+                  <DetailItem icon={Target} tone="green" title="Assignee" body={previewText(selectedTeam.assignee)} />
                   <DetailItem
                     icon={CalendarDays}
                     tone="blue"
@@ -665,21 +654,10 @@ export default function XFNCenter() {
                     icon={Activity}
                     tone="green"
                     title="Editable Overlay"
-                    body="Every field below is editable, but the starting values come from Jira whenever a linked issue is available."
+                    body="Every field below starts with pulled Jira data when available, and teams can edit any field locally from there."
                   />
-                  <DetailItem
-                    icon={Link2}
-                    tone="orange"
-                    title="Issue Linkage"
-                    body={selectedTeam.issueKey || "No issue key linked"}
-                  />
-                  <DetailItem
-                    icon={Users}
-                    tone="purple"
-                    title="Group"
-                    body={selectedTeam.group}
-                  />
-
+                  <DetailItem icon={Link2} tone="orange" title="Team" body={previewText(selectedTeam.team)} />
+                  <DetailItem icon={Users} tone="purple" title="Group" body={previewText(selectedTeam.group)} />
                   <div className="confidence">
                     <div className="detail-icon detail-green">
                       <Smile size={19} />
@@ -701,15 +679,15 @@ export default function XFNCenter() {
                 {TEAM_FIELDS.map((field) => (
                   <label className="editor-field" key={field.key}>
                     <span>{field.label}</span>
-                    {field.key === "issueKey" || field.key === "ownerPm" || field.key === "ownerTl" ? (
-                      <input
-                        type="text"
+                    {field.multiline ? (
+                      <textarea
+                        rows={4}
                         value={selectedTeam[field.key]}
                         onChange={(event) => updateSelectedTeamField(field.key, event.target.value)}
                       />
                     ) : (
-                      <textarea
-                        rows={4}
+                      <input
+                        type="text"
                         value={selectedTeam[field.key]}
                         onChange={(event) => updateSelectedTeamField(field.key, event.target.value)}
                       />
@@ -719,11 +697,11 @@ export default function XFNCenter() {
               </div>
 
               <footer className="detail-actions">
-                <button className="secondary-button" onClick={resetSelectedTeamOverrides} type="button">
+                <button className="secondary-button" onClick={resetSelectedIssueOverrides} type="button">
                   <Plus size={16} />
                   Reset Overrides
                 </button>
-                <button className="primary-button" onClick={refreshLiveData} type="button">
+                <button className="primary-button" onClick={() => setRefreshToken((value) => value + 1)} type="button">
                   Pull Jira Again
                 </button>
               </footer>

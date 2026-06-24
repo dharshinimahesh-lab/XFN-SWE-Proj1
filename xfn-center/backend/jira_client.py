@@ -38,6 +38,25 @@ class JiraClient:
         payload = self._request_json("/rest/api/3/project/search", {"maxResults": 100})
         return payload.get("values", [])
 
+    def get_boards(self, *, max_results: int = 100) -> list[dict[str, Any]]:
+        payload = self._request_json("/rest/agile/1.0/board", {"maxResults": max_results})
+        return payload.get("values", [])
+
+    def get_board_issues(
+        self,
+        *,
+        board_id: int,
+        fields: list[str],
+        max_results: int = 100,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/rest/agile/1.0/board/{board_id}/issue",
+            {
+                "maxResults": max_results,
+                "fields": ",".join(fields),
+            },
+        )
+
     def search_issues(
         self,
         *,

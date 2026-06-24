@@ -4,6 +4,9 @@ from typing import Any
 
 from backend.jira_client import JiraClient
 
+ALLI_PROJECT_KEY = "ALLI"
+ALLI_PROJECT_NAME = "Alli AI & Software Engineering"
+
 
 FIELDS = {
     "summary": "summary",
@@ -243,3 +246,87 @@ def build_issue_lookup_payload(client: JiraClient, *, issue_keys: list[str]) -> 
     issues_by_key = {item["issueKey"]: item for item in normalized}
     last_sync = normalized[0]["updated"] if normalized else None
     return {"issues": issues_by_key, "lastSync": last_sync}
+
+
+def build_boards_payload(client: JiraClient) -> dict[str, Any]:
+    boards = client.get_boards(max_results=100)
+    values = [
+        {
+            "id": board["id"],
+            "name": board["name"],
+            "type": board.get("type", ""),
+            "isPrivate": board.get("isPrivate", False),
+            "projectKey": board.get("location", {}).get("projectKey", ""),
+            "projectName": board.get("location", {}).get("projectName", ""),
+        }
+        for board in boards
+        if board.get("location", {}).get("projectKey") == ALLI_PROJECT_KEY
+    ]
+    return {
+        "boards": values,
+        "spaceProjectKey": ALLI_PROJECT_KEY,
+        "spaceProjectName": ALLI_PROJECT_NAME,
+    }
+
+
+def build_board_payload(client: JiraClient, *, board_id: int, max_results: int = 200) -> dict[str, Any]:
+    allowed_boards = {
+        board["id"]: board
+        for board in client.get_boards(max_results=100)
+        if board.get("location", {}).get("projectKey") == ALLI_PROJECT_KEY
+    }
+    if board_id not in allowed_boards:
+        raise ValueError(f"Board {board_id} is not in the {ALLI_PROJECT_NAME} space")
+
+    payload = client.get_board_issues(board_id=board_id, fields=list(FIELDS.values()), max_results=max_results)
+    issues = [normalize_issue(issue) for issue in payload.get("issues", [])]
+
+    open_risks = sum(1 for issue in issues if issue["risks"])
+    goals_met = sum(1 for issue in issues if issue["met"])
+    unfulfilled_needs = sum(len(issue["needs"]) for issue in issues)
+
+    metrics = [
+        {
+            "label": "Board Issues",
+            "value": str(len(issues)),
+            "sub": "loaded",
+            "delta": f"Board {board_id}",
+            "tone": "blue",
+            "icon": "Target",
+        },
+        {
+            "label": "Goals Met",
+            "value": f"{goals_met} / {len(issues)}",
+            "sub": f"{round((goals_met / len(issues)) * 100) if issues else 0}%",
+            "delta": "Based on Jira status",
+            "tone": "green",
+            "icon": "CheckCircle2",
+        },
+        {
+            "label": "Open Risks",
+            "value": str(open_risks),
+            "sub": "flagged",
+            "delta": "Issues with risk text",
+            "tone": "orange",
+            "icon": "AlertTriangle",
+        },
+        {
+            "label": "Unfulfilled Needs",
+            "value": str(unfulfilled_needs),
+            "sub": "dependencies",
+            "delta": "Dependencies + blockers",
+            "tone": "purple",
+            "icon": "Users",
+        },
+    ]
+
+    return {
+        "boardId": board_id,
+        "boardName": allowed_boards[board_id]["name"],
+        "spaceProjectKey": ALLI_PROJECT_KEY,
+        "spaceProjectName": ALLI_PROJECT_NAME,
+        "teams": issues,
+        "metrics": metrics,
+        "lastSync": issues[0]["updated"] if issues else None,
+        "total": payload.get("total", len(issues)),
+    }
