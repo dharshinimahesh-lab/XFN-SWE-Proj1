@@ -1,124 +1,36 @@
-import React, { useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Bell,
-  Calendar,
-  ChevronDown,
-  MoreVertical,
-  Search,
-  RefreshCw,
-  Bookmark,
-  Target,
-  CheckCircle2,
-  AlertTriangle,
-  Users,
-  Shield,
-  BarChart3,
-  CalendarDays,
   Activity,
+  AlertTriangle,
+  BarChart3,
+  Bell,
+  Bookmark,
+  Calendar,
+  CheckCircle2,
+  ChevronDown,
+  Database,
+  ExternalLink,
+  History,
   Link2,
-  Smile,
-  Plus,
+  MoreVertical,
+  RefreshCw,
+  Save,
+  Search,
+  Shield,
   SlidersHorizontal,
-  ChevronLeft,
-  ChevronRight,
-  ChevronUp,
+  Target,
+  Users,
 } from "lucide-react";
 import "./XFNCenter.css";
 
-const teams = [
-  {
-    team: "Creative Insights",
-    group: "Insights",
-    goal: "Meta asset profile consumable...",
-    met: true,
-    risks: ["Meta SDK rate limits"],
-    needs: ["Meta repo support"],
-    health: "On Track",
-  },
-  {
-    team: "Business Insights",
-    group: "Insights",
-    goal: "Enhance setup prompt for gene...",
-    met: false,
-    risks: ["PTO next week"],
-    needs: [],
-    health: "At Risk",
-  },
-  {
-    team: "Audience Planner",
-    group: "Insights",
-    goal: "Implement Snapshot reach curre...",
-    met: true,
-    risks: [],
-    needs: [],
-    health: "On Track",
-  },
-  {
-    team: "Data Library",
-    group: "Data",
-    goal: "Add new data tables for Prime Day...",
-    met: true,
-    risks: ["Walmart data erroring"],
-    needs: [],
-    health: "At Risk",
-  },
-  {
-    team: "GenAaaS",
-    group: "Data",
-    goal: "Dual-SIM optimizations & stability...",
-    met: false,
-    risks: ["OOM risk"],
-    needs: ["USA API"],
-    health: "At Risk",
-  },
-];
-
-const metrics = [
-  {
-    label: "Sprint Goals",
-    value: "14",
-    sub: "tracked",
-    delta: "↑ 2 from last sprint",
-    tone: "blue",
-    icon: Target,
-  },
-  {
-    label: "Goals Met",
-    value: "9 / 14",
-    sub: "64%",
-    delta: "↑ 11% from last sprint",
-    tone: "green",
-    icon: CheckCircle2,
-  },
-  {
-    label: "Open Risks",
-    value: "6",
-    sub: "high",
-    delta: "↓ 1 from last sprint",
-    tone: "orange",
-    icon: AlertTriangle,
-  },
-  {
-    label: "Unfulfilled Needs",
-    value: "11",
-    sub: "dependencies",
-    delta: "— same as last sprint",
-    tone: "purple",
-    icon: Users,
-  },
-];
-
-function Filter({ label, value }) {
-  return (
-    <button className="filter">
-      <span>
-        <small>{label}</small>
-        <strong>{value}</strong>
-      </span>
-      <ChevronDown size={16} />
-    </button>
-  );
-}
+const defaultFilters = {
+  search: "",
+  scrumTeam: "All",
+  alliGroup: "All",
+  sprintIteration: "All",
+  riskLevel: "All",
+  sortBy: "Group",
+};
 
 function StatusPill({ children, tone = "green" }) {
   return <span className={`pill pill-${tone}`}>{children}</span>;
@@ -128,22 +40,18 @@ function Dot({ tone = "orange" }) {
   return <span className={`dot dot-${tone}`} />;
 }
 
-function MetricCard({ metric }) {
-  const Icon = metric.icon;
-
+function MetricCard({ label, value, sub, tone, icon: Icon }) {
   return (
     <article className="metric-card">
-      <div className={`metric-icon metric-${metric.tone}`}>
-        <Icon size={26} />
+      <div className={`metric-icon metric-${tone}`}>
+        <Icon size={25} />
       </div>
-
       <div>
-        <h3>{metric.label}</h3>
+        <h3>{label}</h3>
         <div className="metric-value-row">
-          <strong>{metric.value}</strong>
-          <span>{metric.sub}</span>
+          <strong>{value}</strong>
+          <span>{sub}</span>
         </div>
-        <p>{metric.delta}</p>
       </div>
     </article>
   );
@@ -157,14 +65,280 @@ function DetailItem({ icon: Icon, title, body, tone }) {
       </div>
       <div>
         <h4>{title}</h4>
-        <p>{body}</p>
+        <p>{body || "Not specified"}</p>
       </div>
     </div>
   );
 }
 
+function Field({ label, value, onChange, multiline = false }) {
+  return (
+    <label className="edit-field">
+      <span>{label}</span>
+      {multiline ? (
+        <textarea value={value} onChange={(event) => onChange(event.target.value)} rows={4} />
+      ) : (
+        <input value={value} onChange={(event) => onChange(event.target.value)} />
+      )}
+    </label>
+  );
+}
+
+function SelectField({ label, value, options, onChange }) {
+  return (
+    <label className="edit-field">
+      <span>{label}</span>
+      <select value={value} onChange={(event) => onChange(event.target.value)}>
+        {options.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function FilterSelect({ label, name, value, options, onChange }) {
+  return (
+    <label className="filter-control">
+      <span>{label}</span>
+      <select name={name} value={value} onChange={onChange}>
+        {options.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
+      <ChevronDown size={16} />
+    </label>
+  );
+}
+
+function formatDate(value) {
+  if (!value) {
+    return "Never";
+  }
+
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function splitList(value) {
+  return value
+    .split("\n")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function listText(value) {
+  return Array.isArray(value) ? value.join("\n") : "";
+}
+
 export default function XFNCenter() {
-  const [selectedTeam, setSelectedTeam] = useState("Creative Insights");
+  const [filters, setFilters] = useState(defaultFilters);
+  const [dashboard, setDashboard] = useState({
+    rows: [],
+    metrics: {
+      totalGoals: 0,
+      goalsMet: 0,
+      goalRate: 0,
+      openRisks: 0,
+      openNeeds: 0,
+      productGoals: [],
+    },
+    options: {
+      scrumTeams: [],
+      alliGroups: [],
+      sprintIterations: [],
+      riskLevels: [],
+    },
+    latestSync: null,
+  });
+  const [selectedId, setSelectedId] = useState(null);
+  const [draft, setDraft] = useState(null);
+  const [audit, setAudit] = useState([]);
+  const [showAudit, setShowAudit] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [notice, setNotice] = useState("");
+
+  const selectedRow = useMemo(() => {
+    return dashboard.rows.find((row) => row.id === selectedId) || dashboard.rows[0] || null;
+  }, [dashboard.rows, selectedId]);
+
+  const metricCards = useMemo(() => {
+    const metrics = dashboard.metrics;
+    return [
+      {
+        label: "Sprint Goals",
+        value: String(metrics.totalGoals),
+        sub: "tracked",
+        tone: "blue",
+        icon: Target,
+      },
+      {
+        label: "Goals Met",
+        value: `${metrics.goalsMet} / ${metrics.totalGoals}`,
+        sub: `${metrics.goalRate}%`,
+        tone: "green",
+        icon: CheckCircle2,
+      },
+      {
+        label: "Open Risks",
+        value: String(metrics.openRisks),
+        sub: "risks and impacts",
+        tone: "orange",
+        icon: AlertTriangle,
+      },
+      {
+        label: "Open Needs",
+        value: String(metrics.openNeeds),
+        sub: "dependencies",
+        tone: "purple",
+        icon: Users,
+      },
+    ];
+  }, [dashboard.metrics]);
+
+  const loadDashboard = useCallback(async (nextFilters = filters) => {
+    setLoading(true);
+    const params = new URLSearchParams();
+
+    Object.entries(nextFilters).forEach(([key, value]) => {
+      if (value && value !== "All") {
+        params.set(key, value);
+      }
+    });
+
+    try {
+      const response = await fetch(`/api/dashboard?${params.toString()}`);
+      if (!response.ok) {
+        throw new Error("Dashboard API failed");
+      }
+
+      const data = await response.json();
+      setDashboard(data);
+      setNotice("");
+    } catch (error) {
+      setNotice(error.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [filters]);
+
+  useEffect(() => {
+    loadDashboard(filters);
+  }, [filters, loadDashboard]);
+
+  useEffect(() => {
+    if (selectedRow) {
+      setDraft({
+        ...selectedRow,
+        risks: listText(selectedRow.risks),
+        needs: listText(selectedRow.needs),
+        impacts: listText(selectedRow.impacts),
+      });
+      setAudit([]);
+      setShowAudit(false);
+    }
+  }, [selectedRow]);
+
+  function updateFilter(event) {
+    const { name, value } = event.target;
+    setFilters((current) => ({ ...current, [name]: value }));
+  }
+
+  function updateDraft(field, value) {
+    setDraft((current) => ({ ...current, [field]: value }));
+  }
+
+  async function saveDraft() {
+    if (!selectedRow || !draft) {
+      return;
+    }
+
+    setSaving(true);
+    const payload = {
+      scrumTeam: draft.scrumTeam,
+      alliGroup: draft.alliGroup,
+      sprintIteration: draft.sprintIteration,
+      productGoal: draft.productGoal,
+      sprintGoal: draft.sprintGoal,
+      goalMet: draft.goalMet,
+      confidence: draft.confidence,
+      health: draft.health,
+      riskLevel: draft.riskLevel,
+      risks: splitList(draft.risks),
+      needs: splitList(draft.needs),
+      impacts: splitList(draft.impacts),
+      progress: draft.progress,
+      jiraUrl: draft.jiraUrl,
+      confluenceUrl: draft.confluenceUrl,
+    };
+
+    try {
+      const response = await fetch(`/api/rows/${selectedRow.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        throw new Error("Save failed");
+      }
+
+      await loadDashboard(filters);
+      setNotice("Saved manual dashboard edits.");
+    } catch (error) {
+      setNotice(error.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function syncNow() {
+    setSyncing(true);
+    setNotice("");
+
+    try {
+      const response = await fetch("/api/sync", { method: "POST" });
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Sync failed");
+      }
+
+      setDashboard(data);
+      setNotice(data.message || "Sync complete.");
+    } catch (error) {
+      setNotice(error.message);
+      await loadDashboard(filters);
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  async function loadAudit() {
+    if (!selectedRow) {
+      return;
+    }
+
+    const response = await fetch(`/api/rows/${selectedRow.id}/audit`);
+    const data = await response.json();
+    setAudit(data.audit || []);
+    setShowAudit(true);
+  }
+
+  const options = dashboard.options;
+  const selectedProductGoal = dashboard.metrics.productGoals.find(
+    (item) => item.goal === selectedRow?.productGoal,
+  );
 
   return (
     <main className="xfn-page">
@@ -175,56 +349,95 @@ export default function XFNCenter() {
         </div>
 
         <div className="topbar-actions">
-          <button className="sprint-picker">
+          <button className="sprint-picker" type="button">
             <span>Sprint:</span>
-            <strong>2026-06-08</strong>
-            <ChevronDown size={16} />
+            <strong>{filters.sprintIteration}</strong>
             <Calendar size={18} />
           </button>
 
-          <span className="sync-meta">Last sync: Jun 8, 2026 · 10:42 AM</span>
+          <span className="sync-meta">
+            Last sync: {formatDate(dashboard.latestSync?.completed_at || dashboard.latestSync?.started_at)}
+          </span>
 
-          <button className="ghost-button">
-            <RefreshCw size={16} />
-            Sync Now
+          <button className="ghost-button" type="button" onClick={syncNow} disabled={syncing}>
+            <RefreshCw size={16} className={syncing ? "spin" : ""} />
+            {syncing ? "Syncing" : "Sync Now"}
           </button>
 
-          <button className="icon-button notification-button">
+          <button className="icon-button notification-button" type="button" aria-label="Open alerts">
             <Bell size={20} />
-            <span>2</span>
+            <span>{dashboard.metrics.openRisks}</span>
           </button>
 
-          <button className="avatar">KH</button>
+          <button className="avatar" type="button">DM</button>
         </div>
       </header>
 
       <section className="filters-row">
         <label className="search-box">
-          <span>Search keywords: Walmart, Meta, Prime Days...</span>
+          <input
+            name="search"
+            value={filters.search}
+            onChange={updateFilter}
+            placeholder="Search Walmart, Meta, Prime Days..."
+          />
           <Search size={19} />
         </label>
 
-        <Filter label="Scrum Team" value="All" />
-        <Filter label="All Group" value="All" />
-        <Filter label="Sprint Iteration" value="2026-06-08" />
-        <Filter label="Risk Level" value="All" />
-        <Filter label="Sort By" value="Group" />
+        <FilterSelect
+          label="Scrum Team"
+          name="scrumTeam"
+          value={filters.scrumTeam}
+          options={["All", ...options.scrumTeams]}
+          onChange={updateFilter}
+        />
+        <FilterSelect
+          label="Alli Group"
+          name="alliGroup"
+          value={filters.alliGroup}
+          options={["All", ...options.alliGroups]}
+          onChange={updateFilter}
+        />
+        <FilterSelect
+          label="Sprint"
+          name="sprintIteration"
+          value={filters.sprintIteration}
+          options={["All", ...options.sprintIterations]}
+          onChange={updateFilter}
+        />
+        <FilterSelect
+          label="Risk"
+          name="riskLevel"
+          value={filters.riskLevel}
+          options={["All", ...options.riskLevels]}
+          onChange={updateFilter}
+        />
+        <FilterSelect
+          label="Sort"
+          name="sortBy"
+          value={filters.sortBy}
+          options={["Group", "Team", "Sprint", "Health", "Updated"]}
+          onChange={updateFilter}
+        />
 
-        <button className="icon-button">
+        <button className="icon-button" type="button" aria-label="Filter settings">
           <SlidersHorizontal size={20} />
         </button>
 
-        <button className="save-button">
+        <button className="save-button" type="button">
           <Bookmark size={17} />
           Save View
         </button>
       </section>
 
+      {notice && <div className="notice">{notice}</div>}
+
       <div className="dashboard-grid">
         <section className="main-column">
           <article className="panel">
-            <div className="panel-header">
+            <div className="panel-header panel-header-row">
               <h2>Team Progress Grid</h2>
+              <span>{loading ? "Loading..." : `${dashboard.rows.length} rows`}</span>
             </div>
 
             <div className="table-wrap">
@@ -243,49 +456,48 @@ export default function XFNCenter() {
                 </thead>
 
                 <tbody>
-                  {teams.map((row) => (
+                  {dashboard.rows.map((row) => (
                     <tr
-                      key={row.team}
-                      className={selectedTeam === row.team ? "selected-row" : ""}
-                      onClick={() => setSelectedTeam(row.team)}
+                      key={row.id}
+                      className={selectedRow?.id === row.id ? "selected-row" : ""}
+                      onClick={() => setSelectedId(row.id)}
                     >
                       <td>
-                        <button className="team-link">{row.team}</button>
+                        <button className="team-link" type="button">{row.scrumTeam}</button>
                       </td>
                       <td>
-                        <StatusPill tone={row.group === "Data" ? "blue" : "purple"}>
-                          {row.group}
+                        <StatusPill tone={row.alliGroup === "Data" ? "blue" : "purple"}>
+                          {row.alliGroup}
                         </StatusPill>
                       </td>
-                      <td>{row.goal}</td>
+                      <td className="goal-cell">{row.sprintGoal}</td>
                       <td>
-                        <StatusPill tone={row.met ? "green" : "red"}>
-                          {row.met ? "Yes" : "No"}
-                          <ChevronDown size={13} />
+                        <StatusPill tone={row.goalMet ? "green" : "red"}>
+                          {row.goalMet ? "Yes" : "No"}
                         </StatusPill>
                       </td>
                       <td>
-                        {row.risks.length ? (
-                          row.risks.map((risk) => (
+                        {row.risks.length || row.impacts.length ? (
+                          [...row.risks, ...row.impacts].slice(0, 2).map((risk) => (
                             <span className="inline-risk" key={risk}>
-                              <Dot tone={risk === "OOM risk" ? "red" : "orange"} />
+                              <Dot tone={row.riskLevel === "High" ? "red" : "orange"} />
                               {risk}
                             </span>
                           ))
                         ) : (
-                          <span className="empty-cell">—</span>
+                          <span className="empty-cell">None</span>
                         )}
                       </td>
                       <td>
                         {row.needs.length ? (
-                          row.needs.map((need) => (
+                          row.needs.slice(0, 2).map((need) => (
                             <span className="inline-risk" key={need}>
                               <Dot tone="orange" />
                               {need}
                             </span>
                           ))
                         ) : (
-                          <span className="empty-cell">—</span>
+                          <span className="empty-cell">None</span>
                         )}
                       </td>
                       <td>
@@ -301,118 +513,159 @@ export default function XFNCenter() {
                 </tbody>
               </table>
             </div>
-
-            <footer className="table-footer">
-              <span>1–5 of 10 teams selected</span>
-              <div className="pagination">
-                <button>
-                  <ChevronLeft size={17} />
-                </button>
-                <button className="active-page">1</button>
-                <button>2</button>
-                <button>3</button>
-                <button>
-                  <ChevronRight size={17} />
-                </button>
-              </div>
-            </footer>
           </article>
 
-          <article className="panel detail-panel">
-            <div className="detail-header">
-              <div>
-                <h2>Creative Insights</h2>
-                <StatusPill tone="green">On Track</StatusPill>
-              </div>
-              <ChevronUp size={19} />
-            </div>
-
-            <div className="details-grid">
-              <div className="details-stack">
-                <DetailItem
-                  icon={Shield}
-                  tone="orange"
-                  title="Risk Alert: Medium"
-                  body="1 risk identified"
-                />
-                <DetailItem
-                  icon={BarChart3}
-                  tone="blue"
-                  title="Product Update"
-                  body="JIRA-2891 has been approved and verified."
-                />
-                <DetailItem
-                  icon={Target}
-                  tone="green"
-                  title="Sprint Goal"
-                  body="Meta aggregated asset profile consumable for all owning teams to improve cross-campaign views."
-                />
-                <DetailItem
-                  icon={CalendarDays}
-                  tone="blue"
-                  title="Upcoming Work"
-                  body="Draft setup wizard v2 with new consent flows for new markets; social rollout plan and communications."
-                />
-              </div>
-
-              <div className="details-stack">
-                <DetailItem
-                  icon={Activity}
-                  tone="green"
-                  title="Current Progress"
-                  body="Fragmented insights are reducing and unifying, with manual extraction down compared to last sprint."
-                />
-                <DetailItem
-                  icon={Link2}
-                  tone="orange"
-                  title="Impediments"
-                  body="Issue with Meta & Access API for Futures SDK due to rate limitations; need support from Meta engineering."
-                />
-                <DetailItem
-                  icon={Users}
-                  tone="purple"
-                  title="Need From Other Teams"
-                  body="Creative Engineering for blob access."
-                />
-
-                <div className="confidence">
-                  <div className="detail-icon detail-green">
-                    <Smile size={19} />
-                  </div>
-                  <div>
-                    <h4>Sprint Confidence</h4>
-
-                    <div className="radio-row">
-                      {["High", "Medium", "Low", "Not Yet Known"].map((item) => (
-                        <label key={item}>
-                          <input
-                            type="radio"
-                            name="confidence"
-                            defaultChecked={item === "High"}
-                          />
-                          <span>{item}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
+          {selectedRow && draft && (
+            <article className="panel detail-panel">
+              <div className="detail-header">
+                <div>
+                  <h2>{selectedRow.scrumTeam}</h2>
+                  <StatusPill tone={selectedRow.health === "On Track" ? "green" : "orange"}>
+                    {selectedRow.health}
+                  </StatusPill>
                 </div>
+                <span className="source-pill">
+                  <Database size={15} />
+                  {selectedRow.source}
+                </span>
               </div>
-            </div>
 
-            <footer className="detail-actions">
-              <button className="secondary-button">
-                <Plus size={16} />
-                View Audit Trail
-              </button>
-              <button className="primary-button">Compare Previous Sprint</button>
-            </footer>
-          </article>
+              <div className="details-grid">
+                <div className="details-stack">
+                  <DetailItem
+                    icon={Shield}
+                    tone={selectedRow.riskLevel === "High" ? "orange" : "blue"}
+                    title={`Risk Alert: ${selectedRow.riskLevel}`}
+                    body={[...selectedRow.risks, ...selectedRow.impacts].join("; ")}
+                  />
+                  <DetailItem
+                    icon={BarChart3}
+                    tone="blue"
+                    title="Progress"
+                    body={selectedRow.progress}
+                  />
+                  <DetailItem
+                    icon={Target}
+                    tone="green"
+                    title="Product Goal Rollup"
+                    body={
+                      selectedProductGoal
+                        ? `${selectedProductGoal.completed} of ${selectedProductGoal.total} sprint goals complete for this product goal.`
+                        : selectedRow.productGoal
+                    }
+                  />
+                  <DetailItem
+                    icon={Link2}
+                    tone="purple"
+                    title="Need From Other Teams"
+                    body={selectedRow.needs.join("; ")}
+                  />
+                </div>
+
+                <form className="edit-grid" onSubmit={(event) => event.preventDefault()}>
+                  <Field label="Scrum Team" value={draft.scrumTeam} onChange={(value) => updateDraft("scrumTeam", value)} />
+                  <Field label="Alli Group" value={draft.alliGroup} onChange={(value) => updateDraft("alliGroup", value)} />
+                  <Field label="Sprint Iteration" value={draft.sprintIteration} onChange={(value) => updateDraft("sprintIteration", value)} />
+                  <SelectField
+                    label="Sprint Goal Met"
+                    value={draft.goalMet ? "Yes" : "No"}
+                    options={["Yes", "No"]}
+                    onChange={(value) => updateDraft("goalMet", value === "Yes")}
+                  />
+                  <SelectField
+                    label="Health"
+                    value={draft.health}
+                    options={["On Track", "Watching", "At Risk", "Unknown"]}
+                    onChange={(value) => updateDraft("health", value)}
+                  />
+                  <SelectField
+                    label="Risk Level"
+                    value={draft.riskLevel}
+                    options={["Low", "Medium", "High"]}
+                    onChange={(value) => updateDraft("riskLevel", value)}
+                  />
+                  <Field label="Product Goal" value={draft.productGoal} onChange={(value) => updateDraft("productGoal", value)} multiline />
+                  <Field label="Sprint Goal" value={draft.sprintGoal} onChange={(value) => updateDraft("sprintGoal", value)} multiline />
+                  <Field label="Progress" value={draft.progress} onChange={(value) => updateDraft("progress", value)} multiline />
+                  <Field label="Risks" value={draft.risks} onChange={(value) => updateDraft("risks", value)} multiline />
+                  <Field label="Needs From Other Teams" value={draft.needs} onChange={(value) => updateDraft("needs", value)} multiline />
+                  <Field label="Impacts" value={draft.impacts} onChange={(value) => updateDraft("impacts", value)} multiline />
+                </form>
+              </div>
+
+              <footer className="detail-actions">
+                <div className="link-row">
+                  {selectedRow.jiraUrl && (
+                    <a href={selectedRow.jiraUrl} target="_blank" rel="noreferrer">
+                      <ExternalLink size={15} />
+                      Jira
+                    </a>
+                  )}
+                  {selectedRow.confluenceUrl && (
+                    <a href={selectedRow.confluenceUrl} target="_blank" rel="noreferrer">
+                      <ExternalLink size={15} />
+                      Confluence
+                    </a>
+                  )}
+                </div>
+                <div className="action-row">
+                  <button className="secondary-button" type="button" onClick={loadAudit}>
+                    <History size={16} />
+                    View Audit Trail
+                  </button>
+                  <button className="primary-button" type="button" onClick={saveDraft} disabled={saving}>
+                    <Save size={16} />
+                    {saving ? "Saving" : "Save Edits"}
+                  </button>
+                </div>
+              </footer>
+
+              {showAudit && (
+                <section className="audit-panel">
+                  <h3>Manual Change Log</h3>
+                  {audit.length ? (
+                    audit.map((entry) => (
+                      <div className="audit-row" key={entry.id}>
+                        <strong>{entry.fieldName}</strong>
+                        <span>{entry.source}</span>
+                        <time>{formatDate(entry.changedAt)}</time>
+                      </div>
+                    ))
+                  ) : (
+                    <p>No manual edits recorded for this row yet.</p>
+                  )}
+                </section>
+              )}
+            </article>
+          )}
         </section>
 
         <aside className="metrics-column">
-          {metrics.map((metric) => (
-            <MetricCard key={metric.label} metric={metric} />
+          {metricCards.map((metric) => (
+            <MetricCard key={metric.label} {...metric} />
           ))}
+          <article className="panel product-rollup">
+            <h2>Product Goal Rollup</h2>
+            {dashboard.metrics.productGoals.map((item) => (
+              <div className="rollup-row" key={item.goal || "Unassigned"}>
+                <span>{item.goal || "Unassigned product goal"}</span>
+                <strong>
+                  {item.completed}/{item.total}
+                </strong>
+              </div>
+            ))}
+          </article>
+          <article className="panel api-panel">
+            <h2>Sync Source</h2>
+            <p>
+              Sync pulls Jira issues through MCP, normalizes them into SQLite, and keeps manual
+              dashboard edits in the audit log.
+            </p>
+            <div className="api-status">
+              <Activity size={16} />
+              {dashboard.latestSync?.status || "Ready"}
+            </div>
+          </article>
         </aside>
       </div>
     </main>

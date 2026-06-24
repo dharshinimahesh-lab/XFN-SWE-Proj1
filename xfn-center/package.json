@@ -4,15 +4,28 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "concurrently \"npm run server\" \"vite\"",
+    "client": "vite",
+    "server": "node server/index.js",
+    "mcp:check": "node server/checkJiraMcp.js",
+    "mcp:fields": "node server/checkJiraMcp.js --fields",
+    "mcp:projects": "node server/checkJiraMcp.js --projects",
+    "mcp:search": "node server/checkJiraMcp.js --search",
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.21.1",
+    "better-sqlite3": "^12.5.0",
+    "concurrently": "^9.2.1",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
     "lucide-react": "^1.21.0",
     "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "react-dom": "^19.2.7",
+    "zod": "^4.2.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
