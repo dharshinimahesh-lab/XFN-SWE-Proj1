@@ -78,6 +78,45 @@ function previewText(value) {
   return value?.trim() ? value : "—";
 }
 
+function inferTeamFamily(teamName, boardName) {
+  const value = `${teamName || ""} ${boardName || ""}`.toLowerCase();
+
+  if (value.includes("data science")) {
+    return "Data Science";
+  }
+
+  if (value.includes("insights") || value.includes("audience planner")) {
+    return "Insights";
+  }
+
+  if (
+    value.includes("workflow") ||
+    value.includes("marketplace") ||
+    value.includes("template") ||
+    value.includes("creative studio") ||
+    value.includes("actions")
+  ) {
+    return "Actions";
+  }
+
+  if (
+    value.includes("data") ||
+    value.includes("home court") ||
+    value.includes("homecourt") ||
+    value.includes("scenario") ||
+    value.includes("generative dashboards") ||
+    value.includes("categorizations")
+  ) {
+    return "Data";
+  }
+
+  if (value.includes("core")) {
+    return "Core";
+  }
+
+  return teamName || "Other";
+}
+
 function teamHasRisks(team) {
   return Boolean(team.impactsOrRisks.trim());
 }
@@ -240,13 +279,17 @@ export default function XFNCenter() {
       (boardPayload.teams || []).map((issue) => {
         const base = toEditableBase(issue);
         const edits = issueEdits[issue.issueKey] || {};
-        return {
+        const merged = {
           storageKey: issue.issueKey,
           ...base,
           ...edits,
         };
+        return {
+          ...merged,
+          teamFamily: inferTeamFamily(merged.team, boardPayload.boardName),
+        };
       }),
-    [boardPayload.teams, issueEdits],
+    [boardPayload.teams, boardPayload.boardName, issueEdits],
   );
 
   const boardOptions = useMemo(
@@ -265,7 +308,7 @@ export default function XFNCenter() {
 
   const teamOptions = useMemo(() => {
     const scopedTeams = view.group === "All" ? teams : teams.filter((team) => team.group === view.group);
-    return ["All", ...scopedTeams.map((team) => team.team)];
+    return ["All", ...new Set(scopedTeams.map((team) => team.teamFamily).filter(Boolean))];
   }, [teams, view.group]);
 
   const filteredTeams = useMemo(() => {
@@ -276,7 +319,7 @@ export default function XFNCenter() {
         if (view.group !== "All" && team.group !== view.group) {
           return false;
         }
-        if (view.team !== "All" && team.team !== view.team) {
+        if (view.team !== "All" && team.teamFamily !== view.team) {
           return false;
         }
         if (view.risk === "Flagged" && !teamHasRisks(team)) {
@@ -291,6 +334,7 @@ export default function XFNCenter() {
         return [
           team.issueKey,
           team.team,
+          team.teamFamily,
           team.group,
           team.status,
           team.assignee,
@@ -476,7 +520,7 @@ export default function XFNCenter() {
               team:
                 current.team !== "All" &&
                 value !== "All" &&
-                !teams.some((team) => team.group === value && team.team === current.team)
+                !teams.some((team) => team.group === value && team.teamFamily === current.team)
                   ? "All"
                   : current.team,
             }));
@@ -548,7 +592,7 @@ export default function XFNCenter() {
                           {row.issueKey}
                         </button>
                       </td>
-                      <td>{previewText(row.team)}</td>
+                      <td>{previewText(row.teamFamily)}</td>
                       <td>
                         <StatusPill tone={row.group === "General" ? "blue" : "purple"}>
                           {previewText(row.group)}
@@ -656,7 +700,12 @@ export default function XFNCenter() {
                     title="Editable Overlay"
                     body="Every field below starts with pulled Jira data when available, and teams can edit any field locally from there."
                   />
-                  <DetailItem icon={Link2} tone="orange" title="Team" body={previewText(selectedTeam.team)} />
+                  <DetailItem
+                    icon={Link2}
+                    tone="orange"
+                    title="Team"
+                    body={`${previewText(selectedTeam.teamFamily)}${selectedTeam.team && selectedTeam.team !== selectedTeam.teamFamily ? ` (${selectedTeam.team})` : ""}`}
+                  />
                   <DetailItem icon={Users} tone="purple" title="Group" body={previewText(selectedTeam.group)} />
                   <div className="confidence">
                     <div className="detail-icon detail-green">
