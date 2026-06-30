@@ -15,12 +15,12 @@ def get_boards():
 
 @boards_bp.get("/api/board")
 def get_board():
-    board_id = int(request.args.get("boardId", "0"))
+    board_id = request.args.get("boardId", "").strip()
     max_results = min(int(request.args.get("maxResults", "200")), 500)
     try:
         payload = build_board_payload(
             current_app.config["jira_client"],
-            board_id=board_id,
+            board_key=board_id,
             max_results=max_results,
         )
     except ValueError as error:

@@ -1,33 +1,30 @@
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertTriangle,
   BarChart3,
-  Bell,
   Bookmark,
-  Calendar,
-  CalendarDays,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
-  ChevronUp,
+  ExternalLink,
   Link2,
-  MoreVertical,
   Plus,
   RefreshCw,
   Search,
   Shield,
   SlidersHorizontal,
-  Smile,
   Target,
+  Trash2,
   Users,
 } from "lucide-react";
 import "./XFNCenter.css";
 import { TEAM_FIELDS, createEmptyTeamData } from "./teamCatalog";
 
-const PAGE_SIZE = 5;
+const PAGE_SIZE = 6;
 const VIEW_STORAGE_KEY = "xfn-center-view";
 const EDITS_STORAGE_KEY = "xfn-center-team-edits";
+const MANUAL_TEAMS_STORAGE_KEY = "xfn-center-manual-teams";
 
 const defaultView = {
   boardId: "",
@@ -35,7 +32,7 @@ const defaultView = {
   group: "All",
   team: "All",
   risk: "All",
-  sortBy: "Group",
+  sortBy: "Product Goal",
 };
 
 const metricIcons = {
@@ -45,12 +42,29 @@ const metricIcons = {
   Users,
 };
 
-function loadSavedJson(key, fallback) {
+function loadSavedObject(key, fallback) {
   try {
     const saved = window.localStorage.getItem(key);
-    return saved ? { ...fallback, ...JSON.parse(saved) } : fallback;
+    if (!saved) {
+      return fallback;
+    }
+    const parsed = JSON.parse(saved);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? { ...fallback, ...parsed } : fallback;
   } catch {
     return fallback;
+  }
+}
+
+function loadSavedArray(key) {
+  try {
+    const saved = window.localStorage.getItem(key);
+    if (!saved) {
+      return [];
+    }
+    const parsed = JSON.parse(saved);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
   }
 }
 
@@ -74,71 +88,99 @@ function formatSyncTime(value) {
   }).format(new Date(value));
 }
 
-function previewText(value) {
-  return value?.trim() ? value : "—";
+function normalizeText(value) {
+  if (Array.isArray(value)) {
+    return value.filter(Boolean).join("\n");
+  }
+  return value ? String(value) : "";
 }
 
-function inferTeamFamily(teamName, boardName) {
-  const value = `${teamName || ""} ${boardName || ""}`.toLowerCase();
+function hasText(value) {
+  return normalizeText(value).trim().length > 0;
+}
 
-  if (value.includes("data science")) {
-    return "Data Science";
+function previewText(value) {
+  const normalized = normalizeText(value).trim();
+  return normalized || "—";
+}
+
+function compactText(value, max = 88) {
+  const normalized = normalizeText(value).replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "—";
   }
-
-  if (value.includes("insights") || value.includes("audience planner")) {
-    return "Insights";
-  }
-
-  if (
-    value.includes("workflow") ||
-    value.includes("marketplace") ||
-    value.includes("template") ||
-    value.includes("creative studio") ||
-    value.includes("actions")
-  ) {
-    return "Actions";
-  }
-
-  if (
-    value.includes("data") ||
-    value.includes("home court") ||
-    value.includes("homecourt") ||
-    value.includes("scenario") ||
-    value.includes("generative dashboards") ||
-    value.includes("categorizations")
-  ) {
-    return "Data";
-  }
-
-  if (value.includes("core")) {
-    return "Core";
-  }
-
-  return teamName || "Other";
+  return normalized.length > max ? `${normalized.slice(0, max - 1)}…` : normalized;
 }
 
 function teamHasRisks(team) {
-  return Boolean(team.impactsOrRisks.trim());
+  return hasText(team.impactsOrRisks);
 }
 
 function teamHasNeeds(team) {
-  return Boolean(team.needsFromOtherTeams.trim());
+  return hasText(team.needsFromOtherTeams);
 }
 
 function sortTeams(teams, sortBy) {
   const values = [...teams];
+
   values.sort((left, right) => {
-    if (sortBy === "Team") {
-      return left.team.localeCompare(right.team);
-    }
-
     if (sortBy === "Updated") {
-      return (right.liveUpdatedAt || "").localeCompare(left.liveUpdatedAt || "") || left.team.localeCompare(right.team);
+      return (right.liveUpdatedAt || "").localeCompare(left.liveUpdatedAt || "");
     }
 
-    return left.group.localeCompare(right.group) || left.team.localeCompare(right.team);
+    if (sortBy === "Team") {
+      return (left.team || "").localeCompare(right.team || "") || (left.productGoal || "").localeCompare(right.productGoal || "");
+    }
+
+    if (sortBy === "Group") {
+      return (left.group || "").localeCompare(right.group || "") || (left.team || "").localeCompare(right.team || "");
+    }
+
+    return (left.productGoal || "").localeCompare(right.productGoal || "") || (left.team || "").localeCompare(right.team || "");
   });
+
   return values;
+}
+
+function toEditableBase(team) {
+  return {
+    ...createEmptyTeamData(),
+    storageKey: team.storageKey || team.issueKey || `entry-${Math.random().toString(36).slice(2, 8)}`,
+    issueKey: team.issueKey || "",
+    issueUrl: team.issueUrl || "",
+    team: team.team || "",
+    group: team.group || "",
+    status: team.status || "",
+    assignee: team.assignee || "",
+    productGoal: team.productGoal || "",
+    currentProgress: normalizeText(team.currentProgress),
+    upcomingWork: normalizeText(team.upcomingWork),
+    impactsOrRisks: normalizeText(team.impactsOrRisks),
+    needsFromOtherTeams: normalizeText(team.needsFromOtherTeams),
+    health: team.health || "",
+    liveUpdatedAt: team.liveUpdatedAt || "",
+    sourceBoardName: team.sourceBoardName || "",
+    sprintName: team.sprintName || "",
+    sprintState: team.sprintState || "",
+    children: Array.isArray(team.children) ? team.children : [],
+    manual: Boolean(team.manual),
+  };
+}
+
+function createManualTeam(boardId, boardName) {
+  return {
+    ...createEmptyTeamData(),
+    storageKey: `manual-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    boardId,
+    issueUrl: "",
+    health: "Manual",
+    liveUpdatedAt: "",
+    sourceBoardName: boardName || "Manual Team",
+    sprintName: "",
+    sprintState: "manual",
+    children: [],
+    manual: true,
+  };
 }
 
 function FilterSelect({ label, value, options, onChange }) {
@@ -158,12 +200,8 @@ function FilterSelect({ label, value, options, onChange }) {
   );
 }
 
-function StatusPill({ children, tone = "green" }) {
+function StatusPill({ children, tone = "blue" }) {
   return <span className={`pill pill-${tone}`}>{children}</span>;
-}
-
-function Dot({ tone = "orange" }) {
-  return <span className={`dot dot-${tone}`} />;
 }
 
 function MetricCard({ metric }) {
@@ -186,7 +224,7 @@ function MetricCard({ metric }) {
   );
 }
 
-function DetailItem({ icon: Icon, title, body, tone }) {
+function DetailItem({ icon: Icon, title, body, tone = "blue" }) {
   return (
     <div className="detail-item">
       <div className={`detail-icon detail-${tone}`}>
@@ -200,34 +238,39 @@ function DetailItem({ icon: Icon, title, body, tone }) {
   );
 }
 
-function toEditableBase(issue) {
-  return {
-    issueKey: issue.issueKey || "",
-    team: issue.team || "",
-    group: issue.group || "",
-    status: issue.status || "",
-    assignee: issue.assignee || "",
-    sprintGoal: issue.goal || "",
-    currentProgress: issue.details?.progress || issue.details?.pmUpdate || "",
-    upcomingWork: "",
-    impactsOrRisks: (issue.risks || []).join("\n"),
-    needsFromOtherTeams: (issue.needs || []).join("\n"),
-    liveUpdatedAt: issue.updated || "",
-  };
+function linkLabel(team) {
+  if (team.manual) {
+    return team.issueKey || "Manual entry";
+  }
+  return team.issueKey || "Jira epic";
+}
+
+function healthTone(team) {
+  if (team.manual) {
+    return "blue";
+  }
+  if (teamHasRisks(team)) {
+    return "orange";
+  }
+  if ((team.status || "").toLowerCase() === "done") {
+    return "green";
+  }
+  return "purple";
 }
 
 export default function XFNCenter() {
-  const [view, setView] = useState(() => loadSavedJson(VIEW_STORAGE_KEY, defaultView));
-  const [issueEdits, setIssueEdits] = useState(() => loadSavedJson(EDITS_STORAGE_KEY, {}));
+  const [view, setView] = useState(() => loadSavedObject(VIEW_STORAGE_KEY, defaultView));
+  const [issueEdits, setIssueEdits] = useState(() => loadSavedObject(EDITS_STORAGE_KEY, {}));
+  const [manualTeams, setManualTeams] = useState(() => loadSavedArray(MANUAL_TEAMS_STORAGE_KEY));
   const [boards, setBoards] = useState([]);
-  const [boardPayload, setBoardPayload] = useState({ teams: [], metrics: [], total: 0, lastSync: "" });
+  const [boardPayload, setBoardPayload] = useState({ teams: [], total: 0, lastSync: "", sprintLabel: "" });
   const [spaceName, setSpaceName] = useState("Alli AI & Software Engineering");
   const [spaceKey, setSpaceKey] = useState("ALLI");
   const [selectedIssueKey, setSelectedIssueKey] = useState("");
   const [page, setPage] = useState(1);
   const [saveState, setSaveState] = useState("Save View");
   const [loadingBoards, setLoadingBoards] = useState(true);
-  const [loadingBoard, setLoadingBoard] = useState(false);
+  const [loadingBoard, setLoadingBoard] = useState(true);
   const [error, setError] = useState("");
   const [refreshToken, setRefreshToken] = useState(0);
 
@@ -240,7 +283,10 @@ export default function XFNCenter() {
   }, [issueEdits]);
 
   useEffect(() => {
-    setLoadingBoards(true);
+    window.localStorage.setItem(MANUAL_TEAMS_STORAGE_KEY, JSON.stringify(manualTeams));
+  }, [manualTeams]);
+
+  useEffect(() => {
     fetchJson("/api/boards")
       .then((payload) => {
         const nextBoards = payload.boards || [];
@@ -261,42 +307,43 @@ export default function XFNCenter() {
       return;
     }
 
-    setLoadingBoard(true);
-    setError("");
     fetchJson(`/api/board?boardId=${encodeURIComponent(view.boardId)}&maxResults=200`)
       .then((payload) => {
         setBoardPayload(payload);
-        setSpaceName(payload.spaceProjectName || spaceName);
-        setSpaceKey(payload.spaceProjectKey || spaceKey);
-        setSelectedIssueKey(payload.teams?.[0]?.issueKey || "");
+        setSpaceName(payload.spaceProjectName || "Alli AI & Software Engineering");
+        setSpaceKey(payload.spaceProjectKey || "ALLI");
       })
       .catch((fetchError) => setError(fetchError.message))
       .finally(() => setLoadingBoard(false));
   }, [view.boardId, refreshToken]);
 
-  const teams = useMemo(
-    () =>
-      (boardPayload.teams || []).map((issue) => {
-        const base = toEditableBase(issue);
-        const edits = issueEdits[issue.issueKey] || {};
-        const merged = {
-          storageKey: issue.issueKey,
-          ...base,
-          ...edits,
-        };
-        return {
-          ...merged,
-          teamFamily: inferTeamFamily(merged.team, boardPayload.boardName),
-        };
-      }),
-    [boardPayload.teams, boardPayload.boardName, issueEdits],
+  const selectedBoard = useMemo(
+    () => boards.find((board) => String(board.id) === view.boardId) || null,
+    [boards, view.boardId],
   );
+
+  const liveTeams = useMemo(
+    () =>
+      (boardPayload.teams || []).map((team) => {
+        const base = toEditableBase(team);
+        const edits = issueEdits[base.storageKey] || {};
+        return { ...base, ...edits };
+      }),
+    [boardPayload.teams, issueEdits],
+  );
+
+  const scopedManualTeams = useMemo(
+    () => manualTeams.filter((team) => team.boardId === view.boardId).map((team) => ({ ...team })),
+    [manualTeams, view.boardId],
+  );
+
+  const teams = useMemo(() => [...liveTeams, ...scopedManualTeams], [liveTeams, scopedManualTeams]);
 
   const boardOptions = useMemo(
     () =>
       boards.map((board) => ({
         value: String(board.id),
-        label: `${board.name} (${board.type})`,
+        label: board.name,
       })),
     [boards],
   );
@@ -308,7 +355,7 @@ export default function XFNCenter() {
 
   const teamOptions = useMemo(() => {
     const scopedTeams = view.group === "All" ? teams : teams.filter((team) => team.group === view.group);
-    return ["All", ...new Set(scopedTeams.map((team) => team.teamFamily).filter(Boolean))];
+    return ["All", ...new Set(scopedTeams.map((team) => team.team).filter(Boolean))];
   }, [teams, view.group]);
 
   const filteredTeams = useMemo(() => {
@@ -319,30 +366,36 @@ export default function XFNCenter() {
         if (view.group !== "All" && team.group !== view.group) {
           return false;
         }
-        if (view.team !== "All" && team.teamFamily !== view.team) {
+
+        if (view.team !== "All" && team.team !== view.team) {
           return false;
         }
+
         if (view.risk === "Flagged" && !teamHasRisks(team)) {
           return false;
         }
+
         if (view.risk === "Clear" && teamHasRisks(team)) {
           return false;
         }
+
         if (!search) {
           return true;
         }
+
         return [
           team.issueKey,
           team.team,
-          team.teamFamily,
           team.group,
           team.status,
           team.assignee,
-          team.sprintGoal,
+          team.productGoal,
           team.currentProgress,
           team.upcomingWork,
           team.impactsOrRisks,
           team.needsFromOtherTeams,
+          team.sourceBoardName,
+          team.sprintName,
         ]
           .join(" ")
           .toLowerCase()
@@ -352,72 +405,78 @@ export default function XFNCenter() {
     );
   }, [teams, view]);
 
-  useEffect(() => {
-    setPage(1);
-  }, [view.search, view.group, view.team, view.risk, view.sortBy, view.boardId]);
-
-  useEffect(() => {
-    if (!filteredTeams.some((team) => team.storageKey === selectedIssueKey)) {
-      setSelectedIssueKey(filteredTeams[0]?.storageKey || "");
-    }
-  }, [filteredTeams, selectedIssueKey]);
-
   const totalPages = Math.max(1, Math.ceil(filteredTeams.length / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
   const pageTeams = filteredTeams.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+  const activeSelectedIssueKey = filteredTeams.some((team) => team.storageKey === selectedIssueKey)
+    ? selectedIssueKey
+    : filteredTeams[0]?.storageKey || "";
 
   const selectedTeam =
-    filteredTeams.find((team) => team.storageKey === selectedIssueKey) ||
-    teams.find((team) => team.storageKey === selectedIssueKey) ||
-    teams[0] ||
+    filteredTeams.find((team) => team.storageKey === activeSelectedIssueKey) ||
+    teams.find((team) => team.storageKey === activeSelectedIssueKey) ||
     null;
 
   const metrics = useMemo(() => {
-    if (boardPayload.metrics?.length) {
-      return boardPayload.metrics;
-    }
-
     const riskTeams = teams.filter((team) => teamHasRisks(team)).length;
-    const needsTeams = teams.filter((team) => teamHasNeeds(team)).length;
+    const manualCount = scopedManualTeams.length;
 
     return [
       {
-        label: "Board Issues",
-        value: String(filteredTeams.length),
-        sub: "loaded",
-        delta: "Current board scope",
+        label: "Product Goal Entries",
+        value: String(teams.length),
+        sub: "editable rows",
+        delta: "Live Jira epics plus manual teams",
         tone: "blue",
         icon: "Target",
       },
       {
-        label: "Editable Issues",
-        value: String(teams.length),
-        sub: "rows",
-        delta: "Live issues with editable overlays",
+        label: "Filtered Results",
+        value: String(filteredTeams.length),
+        sub: "visible now",
+        delta: selectedBoard?.name || "Current board",
         tone: "green",
         icon: "CheckCircle2",
       },
       {
         label: "Risk Notes",
         value: String(riskTeams),
-        sub: "issues",
-        delta: "Pulled or edited",
+        sub: "entries",
+        delta: "Pulled from Jira or edited locally",
         tone: "orange",
         icon: "AlertTriangle",
       },
       {
-        label: "Needs Logged",
-        value: String(needsTeams),
-        sub: "issues",
-        delta: "Pulled or edited",
+        label: "Manual Teams",
+        value: String(manualCount),
+        sub: "local entries",
+        delta: "Available in this board view",
         tone: "purple",
         icon: "Users",
       },
     ];
-  }, [boardPayload.metrics, filteredTeams.length, teams]);
+  }, [filteredTeams.length, scopedManualTeams.length, selectedBoard?.name, teams]);
 
   function updateView(key, value) {
     setView((current) => ({ ...current, [key]: value }));
+    setPage(1);
+  }
+
+  function createManualEntry() {
+    if (!view.boardId) {
+      return;
+    }
+
+    const entry = createManualTeam(view.boardId, selectedBoard?.name);
+    setManualTeams((current) => [entry, ...current]);
+    setSelectedIssueKey(entry.storageKey);
+    setPage(1);
+  }
+
+  function refreshBoardData() {
+    setLoadingBoard(true);
+    setError("");
+    setRefreshToken((value) => value + 1);
   }
 
   function updateSelectedTeamField(field, value) {
@@ -425,17 +484,24 @@ export default function XFNCenter() {
       return;
     }
 
+    if (selectedTeam.manual) {
+      setManualTeams((current) =>
+        current.map((team) => (team.storageKey === selectedTeam.storageKey ? { ...team, [field]: value } : team)),
+      );
+      return;
+    }
+
     setIssueEdits((current) => ({
       ...current,
       [selectedTeam.storageKey]: {
-        ...(current[selectedTeam.storageKey] || createEmptyTeamData()),
+        ...(current[selectedTeam.storageKey] || {}),
         [field]: value,
       },
     }));
   }
 
-  function resetSelectedIssueOverrides() {
-    if (!selectedTeam) {
+  function resetSelectedEntry() {
+    if (!selectedTeam || selectedTeam.manual) {
       return;
     }
 
@@ -446,50 +512,65 @@ export default function XFNCenter() {
     });
   }
 
+  function removeSelectedManualTeam() {
+    if (!selectedTeam || !selectedTeam.manual) {
+      return;
+    }
+
+    setManualTeams((current) => current.filter((team) => team.storageKey !== selectedTeam.storageKey));
+  }
+
+  const sourceBoardSummary = selectedBoard?.sourceBoards?.length
+    ? selectedBoard.sourceBoards.map((board) => board.name).join(", ")
+    : "No source boards loaded";
+
   return (
     <main className="xfn-page">
       <header className="topbar">
         <div className="brand-row">
           <div className="brand-mark">XFN</div>
-          <h1>Sprint Command Center</h1>
+          <div>
+            <p className="eyebrow">{spaceName}</p>
+            <h1>Epic Team Tracker</h1>
+          </div>
         </div>
 
         <div className="topbar-actions">
-          <div className="sprint-picker">
-            <span>Space:</span>
+          <div className="space-chip">
+            <span>Space</span>
             <strong>{spaceKey}</strong>
-            <Calendar size={18} />
-          </div>
-
-          <div className="sprint-picker">
-            <span>Board:</span>
-            <strong>{boards.find((board) => String(board.id) === view.boardId)?.name || "Loading"}</strong>
-            <Calendar size={18} />
           </div>
 
           <span className="sync-meta">Last Jira pull: {formatSyncTime(boardPayload.lastSync)}</span>
 
-          <button className="ghost-button" onClick={() => setRefreshToken((value) => value + 1)} type="button">
+          <button className="ghost-button" onClick={refreshBoardData} type="button">
             <RefreshCw size={16} />
             {loadingBoard ? "Pulling..." : "Pull Live Data"}
           </button>
 
-          <button className="icon-button notification-button" type="button">
-            <Bell size={20} />
-            <span>{teams.filter((team) => teamHasRisks(team)).length}</span>
-          </button>
-
-          <button className="avatar" type="button">
-            XFN
+          <button className="primary-button" onClick={createManualEntry} type="button">
+            <Plus size={16} />
+            Add Manual Team
           </button>
         </div>
       </header>
 
+      <section className="board-context">
+        <div>
+          <h2>{selectedBoard?.name || "Loading board"}</h2>
+          <p>{boardPayload.sprintLabel || "Current or most recent sprint scope will appear here once Jira data loads."}</p>
+        </div>
+        <div className="source-block">
+          <small>Boards included from the ALLI space</small>
+          <strong>{sourceBoardSummary}</strong>
+        </div>
+      </section>
+
       <section className="filters-row">
         <label className="search-box">
           <input
-            aria-label="Search issues"
-            placeholder={`Search ${spaceKey} issues, teams, assignees, goals, risks...`}
+            aria-label="Search epics and teams"
+            placeholder={`Search ${spaceKey} epics, teams, groups, progress, risks...`}
             type="text"
             value={view.search}
             onChange={(event) => updateView("search", event.target.value)}
@@ -498,10 +579,14 @@ export default function XFNCenter() {
         </label>
 
         <FilterSelect
-          label={`${spaceKey} Board`}
+          label="Board"
           value={view.boardId}
           options={boardOptions}
-          onChange={(value) => updateView("boardId", value)}
+          onChange={(value) => {
+            setLoadingBoard(true);
+            setError("");
+            updateView("boardId", value);
+          }}
         />
         <FilterSelect
           label="Team"
@@ -514,32 +599,35 @@ export default function XFNCenter() {
           value={view.group}
           options={groupOptions}
           onChange={(value) => {
+            setPage(1);
             setView((current) => ({
               ...current,
               group: value,
-              team:
-                current.team !== "All" &&
-                value !== "All" &&
-                !teams.some((team) => team.group === value && team.teamFamily === current.team)
-                  ? "All"
-                  : current.team,
+              team: current.team !== "All" && value !== "All" && !teams.some((team) => team.group === value && team.team === current.team) ? "All" : current.team,
             }));
           }}
         />
         <FilterSelect
-          label="Risk Level"
+          label="Risk"
           value={view.risk}
           options={["All", "Flagged", "Clear"]}
           onChange={(value) => updateView("risk", value)}
         />
         <FilterSelect
-          label="Sort By"
+          label="Sort"
           value={view.sortBy}
-          options={["Group", "Team", "Updated"]}
+          options={["Product Goal", "Team", "Group", "Updated"]}
           onChange={(value) => updateView("sortBy", value)}
         />
 
-        <button className="icon-button" onClick={() => setView((current) => ({ ...defaultView, boardId: current.boardId }))} type="button">
+        <button
+          className="icon-button"
+          onClick={() => {
+            setView((current) => ({ ...defaultView, boardId: current.boardId }));
+            setPage(1);
+          }}
+          type="button"
+        >
           <SlidersHorizontal size={20} />
         </button>
 
@@ -564,20 +652,21 @@ export default function XFNCenter() {
         <section className="main-column">
           <article className="panel">
             <div className="panel-header">
-              <h2>Board Issues</h2>
+              <h2>Board Entries</h2>
+              <p>Each row maps to a Jira epic, with the team name coming from the epic component and the group coming from the responsible team.</p>
             </div>
 
             <div className="table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th>Issue</th>
+                    <th>Epic</th>
                     <th>Team</th>
                     <th>Group</th>
-                    <th>Sprint Goal</th>
+                    <th>Product Goal</th>
                     <th>Risks</th>
                     <th>Needs</th>
-                    <th />
+                    <th>Source</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -588,46 +677,32 @@ export default function XFNCenter() {
                       onClick={() => setSelectedIssueKey(row.storageKey)}
                     >
                       <td>
-                        <button className="team-link" type="button">
-                          {row.issueKey}
-                        </button>
+                        <div className="cell-stack">
+                          {row.issueUrl ? (
+                            <a className="team-link" href={row.issueUrl} onClick={(event) => event.stopPropagation()} rel="noreferrer" target="_blank">
+                              {linkLabel(row)}
+                              <ExternalLink size={14} />
+                            </a>
+                          ) : (
+                            <span className="manual-link">{linkLabel(row)}</span>
+                          )}
+                          <small>{previewText(row.status)}</small>
+                        </div>
                       </td>
-                      <td>{previewText(row.teamFamily)}</td>
+                      <td>{previewText(row.team)}</td>
                       <td>
-                        <StatusPill tone={row.group === "General" ? "blue" : "purple"}>
-                          {previewText(row.group)}
-                        </StatusPill>
+                        <StatusPill tone={healthTone(row)}>{previewText(row.group)}</StatusPill>
                       </td>
-                      <td>{previewText(row.sprintGoal)}</td>
-                      <td>
-                        {teamHasRisks(row) ? (
-                          <span className="inline-risk">
-                            <Dot tone="orange" />
-                            {row.impactsOrRisks}
-                          </span>
-                        ) : (
-                          <span className="empty-cell">—</span>
-                        )}
-                      </td>
-                      <td>
-                        {teamHasNeeds(row) ? (
-                          <span className="inline-risk">
-                            <Dot tone="orange" />
-                            {row.needsFromOtherTeams}
-                          </span>
-                        ) : (
-                          <span className="empty-cell">—</span>
-                        )}
-                      </td>
-                      <td>
-                        <MoreVertical size={17} />
-                      </td>
+                      <td>{compactText(row.productGoal)}</td>
+                      <td>{teamHasRisks(row) ? compactText(row.impactsOrRisks, 56) : <span className="empty-cell">—</span>}</td>
+                      <td>{teamHasNeeds(row) ? compactText(row.needsFromOtherTeams, 56) : <span className="empty-cell">—</span>}</td>
+                      <td>{previewText(row.sourceBoardName)}</td>
                     </tr>
                   ))}
                   {pageTeams.length === 0 ? (
                     <tr>
                       <td className="empty-cell" colSpan="7">
-                        No issues match the current board and filters.
+                        No product goal entries match the current filters.
                       </td>
                     </tr>
                   ) : null}
@@ -638,15 +713,11 @@ export default function XFNCenter() {
             <footer className="table-footer">
               <span>
                 {filteredTeams.length === 0
-                  ? "0 issues"
-                  : `${(currentPage - 1) * PAGE_SIZE + 1}-${Math.min(currentPage * PAGE_SIZE, filteredTeams.length)} of ${filteredTeams.length} loaded issues`}
+                  ? "0 entries"
+                  : `${(currentPage - 1) * PAGE_SIZE + 1}-${Math.min(currentPage * PAGE_SIZE, filteredTeams.length)} of ${filteredTeams.length} entries`}
               </span>
               <div className="pagination">
-                <button
-                  disabled={currentPage === 1}
-                  onClick={() => setPage((value) => Math.max(1, value - 1))}
-                  type="button"
-                >
+                <button disabled={currentPage === 1} onClick={() => setPage((value) => Math.max(1, value - 1))} type="button">
                   <ChevronLeft size={17} />
                 </button>
                 <button className="active-page" type="button">
@@ -667,62 +738,70 @@ export default function XFNCenter() {
             <article className="panel detail-panel">
               <div className="detail-header">
                 <div>
-                  <h2>{selectedTeam.issueKey || selectedTeam.team || "Issue"}</h2>
-                  <StatusPill tone={teamHasRisks(selectedTeam) ? "orange" : "green"}>
-                    {teamHasRisks(selectedTeam) ? "Risk Flagged" : "No Risk Flagged"}
-                  </StatusPill>
+                  <h2>{selectedTeam.team || selectedTeam.issueKey || "Entry"}</h2>
+                  <div className="detail-pill-row">
+                    <StatusPill tone={selectedTeam.manual ? "blue" : "green"}>
+                      {selectedTeam.manual ? "Manual Team" : "Live Jira Epic"}
+                    </StatusPill>
+                    <StatusPill tone={healthTone(selectedTeam)}>
+                      {teamHasRisks(selectedTeam) ? "Risk Flagged" : previewText(selectedTeam.health || "On Track")}
+                    </StatusPill>
+                  </div>
                 </div>
-                <ChevronUp size={19} />
               </div>
 
               <div className="details-grid">
                 <div className="details-stack">
                   <DetailItem
                     icon={Shield}
-                    tone={teamHasRisks(selectedTeam) ? "orange" : "green"}
-                    title="Pulled Live"
-                    body={selectedTeam.liveUpdatedAt ? `Jira data loaded for ${selectedTeam.issueKey}.` : "No live issue data loaded."}
+                    tone={selectedTeam.manual ? "blue" : "green"}
+                    title="Source"
+                    body={selectedTeam.manual ? "Created manually in this app for a team that is not yet represented in Jira." : `Pulled live from Jira epic ${selectedTeam.issueKey}.`}
                   />
                   <DetailItem icon={BarChart3} tone="blue" title="Status" body={previewText(selectedTeam.status)} />
-                  <DetailItem icon={Target} tone="green" title="Assignee" body={previewText(selectedTeam.assignee)} />
-                  <DetailItem
-                    icon={CalendarDays}
-                    tone="blue"
-                    title="Last Live Update"
-                    body={formatSyncTime(selectedTeam.liveUpdatedAt)}
-                  />
+                  <DetailItem icon={Users} tone="purple" title="Group" body={previewText(selectedTeam.group)} />
+                  <DetailItem icon={Activity} tone="green" title="Team" body={previewText(selectedTeam.team)} />
                 </div>
 
                 <div className="details-stack">
-                  <DetailItem
-                    icon={Activity}
-                    tone="green"
-                    title="Editable Overlay"
-                    body="Every field below starts with pulled Jira data when available, and teams can edit any field locally from there."
-                  />
+                  <DetailItem icon={Target} tone="blue" title="Product Goal" body={previewText(selectedTeam.productGoal)} />
                   <DetailItem
                     icon={Link2}
                     tone="orange"
-                    title="Team"
-                    body={`${previewText(selectedTeam.teamFamily)}${selectedTeam.team && selectedTeam.team !== selectedTeam.teamFamily ? ` (${selectedTeam.team})` : ""}`}
+                    title="Source Board + Sprint"
+                    body={`${previewText(selectedTeam.sourceBoardName)}${selectedTeam.sprintName ? ` • ${selectedTeam.sprintName}` : ""}`}
                   />
-                  <DetailItem icon={Users} tone="purple" title="Group" body={previewText(selectedTeam.group)} />
-                  <div className="confidence">
-                    <div className="detail-icon detail-green">
-                      <Smile size={19} />
-                    </div>
-                    <div>
-                      <h4>Fields In Scope</h4>
-                      <div className="radio-row">
-                        <label>
-                          <input checked readOnly type="radio" />
-                          <span>{TEAM_FIELDS.length} editable fields</span>
-                        </label>
-                      </div>
-                    </div>
-                  </div>
+                  <DetailItem icon={CheckCircle2} tone="green" title="Assignee" body={previewText(selectedTeam.assignee)} />
+                  <DetailItem
+                    icon={RefreshCw}
+                    tone="blue"
+                    title="Last Live Update"
+                    body={selectedTeam.manual ? "Manual entries do not have a Jira sync timestamp." : formatSyncTime(selectedTeam.liveUpdatedAt)}
+                  />
                 </div>
               </div>
+
+              <section className="linked-issues">
+                <div className="section-head">
+                  <h3>Linked Sprint Issues</h3>
+                  <span>{selectedTeam.children?.length || 0} linked</span>
+                </div>
+                {selectedTeam.children?.length ? (
+                  <ul className="issue-list">
+                    {selectedTeam.children.map((child) => (
+                      <li key={child.issueKey}>
+                        <a href={child.issueUrl} rel="noreferrer" target="_blank">
+                          {child.issueKey}
+                        </a>
+                        <span>{child.summary}</span>
+                        <small>{child.status}</small>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="empty-cell">No linked sprint issues are attached to this entry.</p>
+                )}
+              </section>
 
               <div className="editor-grid">
                 {TEAM_FIELDS.map((field) => (
@@ -731,13 +810,13 @@ export default function XFNCenter() {
                     {field.multiline ? (
                       <textarea
                         rows={4}
-                        value={selectedTeam[field.key]}
+                        value={selectedTeam[field.key] || ""}
                         onChange={(event) => updateSelectedTeamField(field.key, event.target.value)}
                       />
                     ) : (
                       <input
                         type="text"
-                        value={selectedTeam[field.key]}
+                        value={selectedTeam[field.key] || ""}
                         onChange={(event) => updateSelectedTeamField(field.key, event.target.value)}
                       />
                     )}
@@ -746,13 +825,32 @@ export default function XFNCenter() {
               </div>
 
               <footer className="detail-actions">
-                <button className="secondary-button" onClick={resetSelectedIssueOverrides} type="button">
-                  <Plus size={16} />
-                  Reset Overrides
-                </button>
-                <button className="primary-button" onClick={() => setRefreshToken((value) => value + 1)} type="button">
-                  Pull Jira Again
-                </button>
+                <div className="detail-action-group">
+                  {selectedTeam.manual ? (
+                    <button className="secondary-button" onClick={removeSelectedManualTeam} type="button">
+                      <Trash2 size={16} />
+                      Delete Manual Team
+                    </button>
+                  ) : (
+                    <button className="secondary-button" onClick={resetSelectedEntry} type="button">
+                      <Plus size={16} />
+                      Reset Jira Overrides
+                    </button>
+                  )}
+                </div>
+
+                <div className="detail-action-group">
+                  {selectedTeam.issueUrl ? (
+                    <a className="secondary-button link-button" href={selectedTeam.issueUrl} rel="noreferrer" target="_blank">
+                      <ExternalLink size={16} />
+                      Open in Jira
+                    </a>
+                  ) : null}
+                  <button className="ghost-button detail-refresh" onClick={refreshBoardData} type="button">
+                    <RefreshCw size={16} />
+                    Pull Jira Again
+                  </button>
+                </div>
               </footer>
             </article>
           ) : null}

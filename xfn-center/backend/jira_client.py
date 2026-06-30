@@ -57,6 +57,38 @@ class JiraClient:
             },
         )
 
+    def get_board_sprints(
+        self,
+        *,
+        board_id: int,
+        state: str,
+        max_results: int = 50,
+    ) -> list[dict[str, Any]]:
+        payload = self._request_json(
+            f"/rest/agile/1.0/board/{board_id}/sprint",
+            {
+                "state": state,
+                "maxResults": max_results,
+            },
+        )
+        return payload.get("values", [])
+
+    def get_board_sprint_issues(
+        self,
+        *,
+        board_id: int,
+        sprint_id: int,
+        fields: list[str],
+        max_results: int = 100,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/rest/agile/1.0/board/{board_id}/sprint/{sprint_id}/issue",
+            {
+                "maxResults": max_results,
+                "fields": ",".join(fields),
+            },
+        )
+
     def search_issues(
         self,
         *,

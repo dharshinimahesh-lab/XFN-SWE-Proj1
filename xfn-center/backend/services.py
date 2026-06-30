@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Any
 
 from backend.jira_client import JiraClient
@@ -7,6 +8,36 @@ from backend.jira_client import JiraClient
 ALLI_PROJECT_KEY = "ALLI"
 ALLI_PROJECT_NAME = "Alli AI & Software Engineering"
 
+ALLI_BOARD_GROUPS = [
+    {
+        "key": "alli-actions",
+        "name": "Alli - Actions",
+        "source_board_names": [
+            "Creative - AI Template Generator",
+            "3rd Party Marketplace",
+            "Alli Frontend Core",
+        ],
+    },
+    {
+        "key": "alli-data",
+        "name": "Alli - Data",
+        "source_board_names": [
+            "Alli - Data Group",
+            "Data Integrations",
+            "Alli - Media and Scenario Planner",
+            "Home Court",
+        ],
+    },
+    {
+        "key": "alli-insights",
+        "name": "Alli - Insights",
+        "source_board_names": [
+            "Alli - Insights Group",
+            "Business Insights",
+            "Audience Planner",
+        ],
+    },
+]
 
 FIELDS = {
     "summary": "summary",
@@ -30,7 +61,12 @@ FIELDS = {
     "team_alt": "customfield_10001",
     "blocking_deliverable": "customfield_10663",
     "dependencies": "customfield_11616",
+    "epic_link": "customfield_10014",
+    "components": "components",
+    "issuetype": "issuetype",
 }
+
+JIRA_BROWSE_BASE = "https://agencypmg.atlassian.net/browse"
 
 
 def _normalize_value(value: Any) -> Any:
@@ -63,7 +99,7 @@ def _string_list(value: Any) -> list[str]:
     return [str(normalized)]
 
 
-def _first_text(*values: Any, fallback: str = "Unassigned") -> str:
+def _first_text(*values: Any, fallback: str = "") -> str:
     for value in values:
         normalized = _normalize_value(value)
         if isinstance(normalized, list):
@@ -96,237 +132,337 @@ def _health_label(fields: dict[str, Any], has_risks: bool, is_done: bool) -> str
     return "On Track"
 
 
-def _sprint_names(value: Any) -> list[str]:
+def _normalize_components(value: Any) -> list[str]:
+    if not value:
+        return []
     names: list[str] = []
-    normalized = _normalize_value(value)
-    if isinstance(normalized, list):
-        for item in normalized:
-            if item:
-                names.append(str(item))
-    elif normalized:
-        names.append(str(normalized))
+    for component in value:
+        if isinstance(component, dict) and component.get("name"):
+            names.append(component["name"])
     return names
 
 
-def normalize_issue(issue: dict[str, Any]) -> dict[str, Any]:
+def _get_alli_boards(client: JiraClient) -> list[dict[str, Any]]:
+    return [
+        board
+        for board in client.get_boards(max_results=100)
+        if board.get("location", {}).get("projectKey") == ALLI_PROJECT_KEY
+    ]
+
+
+def _board_group_spec(board_key: str) -> dict[str, Any] | None:
+    return next((group for group in ALLI_BOARD_GROUPS if group["key"] == board_key), None)
+
+
+def _latest_or_active_sprint(client: JiraClient, *, board_id: int) -> dict[str, Any] | None:
+    active = client.get_board_sprints(board_id=board_id, state="active", max_results=20)
+    if active:
+        active.sort(key=lambda sprint: sprint.get("startDate") or sprint.get("id", 0), reverse=True)
+        return active[0]
+
+    closed = client.get_board_sprints(board_id=board_id, state="closed", max_results=100)
+    closed = [sprint for sprint in closed if sprint.get("endDate")]
+    closed.sort(key=lambda sprint: sprint.get("endDate") or "", reverse=True)
+    return closed[0] if closed else None
+
+
+def _normalize_child_issue(issue: dict[str, Any]) -> dict[str, Any]:
+    fields = issue.get("fields", {})
+    return {
+        "issueKey": issue.get("key"),
+        "issueUrl": f"{JIRA_BROWSE_BASE}/{issue.get('key')}",
+        "summary": fields.get(FIELDS["summary"], ""),
+        "status": _first_text(fields.get(FIELDS["status"]), fallback="Unknown"),
+        "components": _normalize_components(fields.get(FIELDS["components"])),
+        "epicKey": fields.get(FIELDS["epic_link"]),
+    }
+
+
+def _normalize_epic(issue: dict[str, Any]) -> dict[str, Any]:
     fields = issue.get("fields", {})
     risks = _string_list(fields.get(FIELDS["risks"]))
     dependencies = _string_list(fields.get(FIELDS["dependencies"]))
     blockers = _string_list(fields.get(FIELDS["blocking_deliverable"]))
     needs = [*dependencies, *blockers]
-    done = _is_done(fields)
-    team_name = _first_text(
-        fields.get(FIELDS["responsible_team_alt"]),
-        fields.get(FIELDS["responsible_team"]),
-        fields.get(FIELDS["cross_functional_team"]),
-        fields.get(FIELDS["team"]),
-        fields.get(FIELDS["team_alt"]),
-        fallback="Unknown Team",
-    )
-    group_name = _first_text(fields.get(FIELDS["accountable_group"]), fallback="Unscoped")
-    goal = _first_text(fields.get(FIELDS["goals"]), fields.get(FIELDS["summary"]), fallback="No summary")
-    update = _first_text(fields.get(FIELDS["pm_update"]), fallback="")
-    progress = _first_text(fields.get(FIELDS["delivery_progress"]), fallback="")
-    health = _health_label(fields, bool(risks), done)
-    sprints = _sprint_names(fields.get(FIELDS["sprint"]))
-
     return {
         "issueKey": issue.get("key"),
-        "team": team_name,
-        "group": group_name,
-        "goal": goal,
-        "met": done,
-        "risks": risks,
-        "needs": needs,
-        "health": health,
+        "issueUrl": f"{JIRA_BROWSE_BASE}/{issue.get('key')}",
+        "productGoal": fields.get(FIELDS["summary"], ""),
+        "components": _normalize_components(fields.get(FIELDS["components"])),
+        "group": _first_text(
+            fields.get(FIELDS["responsible_team"]),
+            fields.get(FIELDS["responsible_team_alt"]),
+            fields.get(FIELDS["accountable_group"]),
+            fallback="Unscoped",
+        ),
         "status": _first_text(fields.get(FIELDS["status"]), fallback="Unknown"),
         "assignee": _first_text(fields.get(FIELDS["assignee"]), fallback="Unassigned"),
         "updated": fields.get(FIELDS["updated"]),
-        "sprints": sprints,
-        "details": {
-            "pmUpdate": update,
-            "progress": progress,
-            "blockers": blockers,
-            "dependencies": dependencies,
-            "risks": risks,
-        },
+        "currentProgress": _first_text(
+            fields.get(FIELDS["delivery_progress"]),
+            fields.get(FIELDS["pm_update"]),
+            fallback="",
+        ),
+        "impactsOrRisks": risks,
+        "needsFromOtherTeams": needs,
+        "health": _health_label(fields, bool(risks), _is_done(fields)),
     }
 
 
-def build_dashboard_payload(
-    client: JiraClient,
-    *,
-    project_key: str,
-    sprint_name: str | None = None,
-    max_results: int = 200,
-) -> dict[str, Any]:
-    jql = f'project = "{project_key}"'
-    if sprint_name:
-        escaped = sprint_name.replace('"', '\\"')
-        jql += f' AND sprint = "{escaped}"'
-    jql += " ORDER BY updated DESC"
+def _format_child_issue_summaries(children: list[dict[str, Any]]) -> str:
+    if not children:
+        return ""
+    summaries = [f"{child['issueKey']}: {child['summary']} ({child['status']})" for child in children[:5]]
+    return "\n".join(summaries)
 
-    issues = client.search_issues(
-        jql=jql,
-        fields=list(FIELDS.values()),
-        max_results=max_results,
-    )
 
-    teams: list[dict[str, Any]] = []
-    sprint_options: set[str] = set()
-
-    for issue in issues:
-        normalized = normalize_issue(issue)
-        sprints = normalized["sprints"]
-        sprint_options.update(sprints)
-        teams.append(normalized)
-
-    open_risks = sum(1 for team in teams if team["risks"])
-    goals_met = sum(1 for team in teams if team["met"])
-    unfulfilled_needs = sum(len(team["needs"]) for team in teams)
-
-    metrics = [
-        {
-            "label": "Sprint Goals",
-            "value": str(len(teams)),
-            "sub": "issues",
-            "delta": f"Project {project_key}",
-            "tone": "blue",
-            "icon": "Target",
-        },
-        {
-            "label": "Goals Met",
-            "value": f"{goals_met} / {len(teams)}",
-            "sub": f"{round((goals_met / len(teams)) * 100) if teams else 0}%",
-            "delta": "Based on Jira status",
-            "tone": "green",
-            "icon": "CheckCircle2",
-        },
-        {
-            "label": "Open Risks",
-            "value": str(open_risks),
-            "sub": "flagged",
-            "delta": "Issues with risk text",
-            "tone": "orange",
-            "icon": "AlertTriangle",
-        },
-        {
-            "label": "Unfulfilled Needs",
-            "value": str(unfulfilled_needs),
-            "sub": "dependencies",
-            "delta": "Dependencies + blockers",
-            "tone": "purple",
-            "icon": "Users",
-        },
+def _issue_fields_for_sprint() -> list[str]:
+    return [
+        FIELDS["summary"],
+        FIELDS["status"],
+        FIELDS["assignee"],
+        FIELDS["epic_link"],
+        FIELDS["components"],
+        FIELDS["responsible_team"],
+        FIELDS["responsible_team_alt"],
+        FIELDS["accountable_group"],
+        FIELDS["issuetype"],
     ]
 
-    return {
-        "project": project_key,
-        "jql": jql,
-        "teams": teams,
-        "metrics": metrics,
-        "sprints": sorted(sprint_options),
-        "lastSync": teams[0]["updated"] if teams else None,
-    }
 
-
-def build_issue_lookup_payload(client: JiraClient, *, issue_keys: list[str]) -> dict[str, Any]:
-    cleaned_keys = [key.strip() for key in issue_keys if key and key.strip()]
-    if not cleaned_keys:
-        return {"issues": {}, "lastSync": None}
-
-    escaped_keys = ",".join(f'"{key.replace(chr(34), chr(92) + chr(34))}"' for key in cleaned_keys)
-    issues = client.search_issues(
-        jql=f"key in ({escaped_keys}) ORDER BY updated DESC",
-        fields=list(FIELDS.values()),
-        max_results=len(cleaned_keys),
-    )
-
-    normalized = [normalize_issue(issue) for issue in issues]
-    issues_by_key = {item["issueKey"]: item for item in normalized}
-    last_sync = normalized[0]["updated"] if normalized else None
-    return {"issues": issues_by_key, "lastSync": last_sync}
+def _issue_fields_for_epics() -> list[str]:
+    return [
+        FIELDS["summary"],
+        FIELDS["status"],
+        FIELDS["status_category"],
+        FIELDS["assignee"],
+        FIELDS["updated"],
+        FIELDS["components"],
+        FIELDS["responsible_team"],
+        FIELDS["responsible_team_alt"],
+        FIELDS["accountable_group"],
+        FIELDS["risks"],
+        FIELDS["dependencies"],
+        FIELDS["blocking_deliverable"],
+        FIELDS["pm_update"],
+        FIELDS["delivery_progress"],
+        FIELDS["delivery_status"],
+        FIELDS["project_status"],
+    ]
 
 
 def build_boards_payload(client: JiraClient) -> dict[str, Any]:
-    boards = client.get_boards(max_results=100)
-    values = [
-        {
-            "id": board["id"],
-            "name": board["name"],
-            "type": board.get("type", ""),
-            "isPrivate": board.get("isPrivate", False),
-            "projectKey": board.get("location", {}).get("projectKey", ""),
-            "projectName": board.get("location", {}).get("projectName", ""),
-        }
-        for board in boards
-        if board.get("location", {}).get("projectKey") == ALLI_PROJECT_KEY
-    ]
+    alli_boards = _get_alli_boards(client)
+    alli_by_name = {board["name"]: board for board in alli_boards}
+
+    values = []
+    for group in ALLI_BOARD_GROUPS:
+        source_boards = []
+        for name in group["source_board_names"]:
+            board = alli_by_name.get(name)
+            if board:
+                source_boards.append(
+                    {
+                        "id": board["id"],
+                        "name": board["name"],
+                        "type": board.get("type", ""),
+                    }
+                )
+
+        values.append(
+            {
+                "id": group["key"],
+                "name": group["name"],
+                "sourceBoards": source_boards,
+            }
+        )
+
     return {
         "boards": values,
         "spaceProjectKey": ALLI_PROJECT_KEY,
         "spaceProjectName": ALLI_PROJECT_NAME,
+        "browseBaseUrl": JIRA_BROWSE_BASE,
     }
 
 
-def build_board_payload(client: JiraClient, *, board_id: int, max_results: int = 200) -> dict[str, Any]:
-    allowed_boards = {
-        board["id"]: board
-        for board in client.get_boards(max_results=100)
-        if board.get("location", {}).get("projectKey") == ALLI_PROJECT_KEY
-    }
-    if board_id not in allowed_boards:
-        raise ValueError(f"Board {board_id} is not in the {ALLI_PROJECT_NAME} space")
+def build_board_payload(client: JiraClient, *, board_key: str, max_results: int = 200) -> dict[str, Any]:
+    group = _board_group_spec(board_key)
+    if group is None:
+        raise ValueError(f"Board {board_key} is not in the {ALLI_PROJECT_NAME} space")
 
-    payload = client.get_board_issues(board_id=board_id, fields=list(FIELDS.values()), max_results=max_results)
-    issues = [normalize_issue(issue) for issue in payload.get("issues", [])]
+    alli_boards = _get_alli_boards(client)
+    alli_by_name = {board["name"]: board for board in alli_boards}
+    source_boards = [alli_by_name[name] for name in group["source_board_names"] if name in alli_by_name]
+    if not source_boards:
+        raise ValueError(f"No source boards were found for {group['name']}")
 
-    open_risks = sum(1 for issue in issues if issue["risks"])
-    goals_met = sum(1 for issue in issues if issue["met"])
-    unfulfilled_needs = sum(len(issue["needs"]) for issue in issues)
+    epic_children: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    epic_source_meta: dict[str, dict[str, Any]] = {}
+    sprint_labels: list[str] = []
 
+    for board in source_boards:
+        sprint = _latest_or_active_sprint(client, board_id=board["id"])
+        if sprint is None:
+            continue
+
+        sprint_labels.append(f"{board['name']}: {sprint.get('name', 'Unknown Sprint')}")
+        issue_payload = client.get_board_sprint_issues(
+            board_id=board["id"],
+            sprint_id=sprint["id"],
+            fields=_issue_fields_for_sprint(),
+            max_results=max_results,
+        )
+
+        for issue in issue_payload.get("issues", []):
+            child = _normalize_child_issue(issue)
+            epic_key = child["epicKey"]
+            issue_type = _first_text(issue.get("fields", {}).get(FIELDS["issuetype"]), fallback="")
+
+            if epic_key:
+                epic_children[epic_key].append(child)
+                epic_source_meta.setdefault(
+                    epic_key,
+                    {
+                        "sourceBoardName": board["name"],
+                        "sprintName": sprint.get("name", ""),
+                        "sprintState": sprint.get("state", ""),
+                    },
+                )
+            elif issue_type == "Epic":
+                epic_children[child["issueKey"]]
+                epic_source_meta.setdefault(
+                    child["issueKey"],
+                    {
+                        "sourceBoardName": board["name"],
+                        "sprintName": sprint.get("name", ""),
+                        "sprintState": sprint.get("state", ""),
+                    },
+                )
+
+    epic_keys = list(epic_children.keys())
+    if not epic_keys:
+        return {
+            "boardId": group["key"],
+            "boardName": group["name"],
+            "spaceProjectKey": ALLI_PROJECT_KEY,
+            "spaceProjectName": ALLI_PROJECT_NAME,
+            "browseBaseUrl": JIRA_BROWSE_BASE,
+            "teams": [],
+            "metrics": [],
+            "lastSync": None,
+            "total": 0,
+            "sprintLabel": "No current or recent sprint issues linked to epics",
+        }
+
+    escaped_keys = ",".join(f'"{key.replace(chr(34), chr(92) + chr(34))}"' for key in epic_keys)
+    epic_issues = client.search_issues(
+        jql=f"key in ({escaped_keys}) ORDER BY updated DESC",
+        fields=_issue_fields_for_epics(),
+        max_results=len(epic_keys),
+    )
+    epics_by_key = {_normalize_epic(issue)["issueKey"]: _normalize_epic(issue) for issue in epic_issues}
+
+    entries: list[dict[str, Any]] = []
+    for epic_key in epic_keys:
+        epic = epics_by_key.get(epic_key)
+        if epic is None:
+            continue
+
+        children = epic_children[epic_key]
+        component_names = epic["components"] or sorted(
+            {
+                component
+                for child in children
+                for component in child["components"]
+                if component
+            }
+        )
+        if not component_names:
+            component_names = ["Unassigned Component"]
+
+        for component_name in component_names:
+            matching_children = [
+                child
+                for child in children
+                if not child["components"] or component_name in child["components"]
+            ]
+            meta = epic_source_meta[epic_key]
+            storage_key = f"{group['key']}::{epic_key}::{component_name}"
+            entries.append(
+                {
+                    "storageKey": storage_key,
+                    "issueKey": epic["issueKey"],
+                    "issueUrl": epic["issueUrl"],
+                    "productGoal": epic["productGoal"],
+                    "team": component_name,
+                    "group": epic["group"],
+                    "status": epic["status"],
+                    "assignee": epic["assignee"],
+                    "currentProgress": epic["currentProgress"] or _format_child_issue_summaries(matching_children),
+                    "upcomingWork": "",
+                    "impactsOrRisks": epic["impactsOrRisks"],
+                    "needsFromOtherTeams": epic["needsFromOtherTeams"],
+                    "health": epic["health"],
+                    "liveUpdatedAt": epic["updated"],
+                    "sourceBoardName": meta["sourceBoardName"],
+                    "sprintName": meta["sprintName"],
+                    "sprintState": meta["sprintState"],
+                    "children": matching_children,
+                    "manual": False,
+                }
+            )
+
+    entries.sort(key=lambda item: (item["sourceBoardName"], item["team"], item["productGoal"]))
+
+    risk_entries = sum(1 for entry in entries if entry["impactsOrRisks"])
+    needs_entries = sum(1 for entry in entries if entry["needsFromOtherTeams"])
     metrics = [
         {
-            "label": "Board Issues",
-            "value": str(len(issues)),
+            "label": "Epic Entries",
+            "value": str(len(entries)),
             "sub": "loaded",
-            "delta": f"Board {board_id}",
+            "delta": group["name"],
             "tone": "blue",
             "icon": "Target",
         },
         {
-            "label": "Goals Met",
-            "value": f"{goals_met} / {len(issues)}",
-            "sub": f"{round((goals_met / len(issues)) * 100) if issues else 0}%",
-            "delta": "Based on Jira status",
+            "label": "Unique Epics",
+            "value": str(len(epic_keys)),
+            "sub": "product goals",
+            "delta": "Current or most recent sprint",
             "tone": "green",
             "icon": "CheckCircle2",
         },
         {
-            "label": "Open Risks",
-            "value": str(open_risks),
-            "sub": "flagged",
-            "delta": "Issues with risk text",
+            "label": "Risk Notes",
+            "value": str(risk_entries),
+            "sub": "entries",
+            "delta": "Pulled from epic fields",
             "tone": "orange",
             "icon": "AlertTriangle",
         },
         {
-            "label": "Unfulfilled Needs",
-            "value": str(unfulfilled_needs),
-            "sub": "dependencies",
+            "label": "Needs Logged",
+            "value": str(needs_entries),
+            "sub": "entries",
             "delta": "Dependencies + blockers",
             "tone": "purple",
             "icon": "Users",
         },
     ]
 
+    last_sync = max((entry["liveUpdatedAt"] or "" for entry in entries), default=None)
+    sprint_label = " | ".join(sprint_labels) if sprint_labels else "Current or most recent sprint"
+
     return {
-        "boardId": board_id,
-        "boardName": allowed_boards[board_id]["name"],
+        "boardId": group["key"],
+        "boardName": group["name"],
         "spaceProjectKey": ALLI_PROJECT_KEY,
         "spaceProjectName": ALLI_PROJECT_NAME,
-        "teams": issues,
+        "browseBaseUrl": JIRA_BROWSE_BASE,
+        "teams": entries,
         "metrics": metrics,
-        "lastSync": issues[0]["updated"] if issues else None,
-        "total": payload.get("total", len(issues)),
+        "lastSync": last_sync,
+        "total": len(entries),
+        "sprintLabel": sprint_label,
     }
