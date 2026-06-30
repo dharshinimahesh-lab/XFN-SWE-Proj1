@@ -3,6 +3,7 @@ from __future__ import annotations
 from flask import Blueprint, current_app, jsonify, request
 
 from backend.services import build_board_payload, build_boards_payload
+from backend.xfn_sync_report import build_xfn_sync_payload
 
 
 boards_bp = Blueprint("boards", __name__)
@@ -26,3 +27,8 @@ def get_board():
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
     return jsonify(payload)
+
+
+@boards_bp.get("/api/xfn-sync")
+def get_xfn_sync():
+    return jsonify(build_xfn_sync_payload(current_app.config["jira_client"]))

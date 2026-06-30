@@ -145,17 +145,18 @@ function sortTeams(teams, sortBy) {
 function toEditableBase(team) {
   return {
     ...createEmptyTeamData(),
-    storageKey: team.storageKey || team.issueKey || `entry-${Math.random().toString(36).slice(2, 8)}`,
-    issueKey: team.issueKey || "",
+    storageKey: team.storageKey || team.issueKey || team.productGoalKey || `entry-${Math.random().toString(36).slice(2, 8)}`,
+    boardId: team.boardId || "",
+    issueKey: team.issueKey || team.productGoalKey || "",
     issueUrl: team.issueUrl || "",
     productGoalUrl: team.productGoalUrl || team.issueUrl || "",
-    team: team.team || "",
+    team: team.team || team.scrumTeam || "",
     group: team.group || "",
     pmOwner: team.pmOwner || "",
     tlOwner: team.tlOwner || "",
     status: team.status || "",
     assignee: team.assignee || "",
-    productGoal: team.productGoal || "",
+    productGoal: team.productGoal || team.productGoalTitle || "",
     sprintGoal: normalizeText(team.sprintGoal),
     currentProgress: normalizeText(team.currentProgress),
     upcomingWork: normalizeText(team.upcomingWork),
@@ -163,7 +164,7 @@ function toEditableBase(team) {
     needsFromOtherTeams: normalizeText(team.needsFromOtherTeams),
     health: team.health || "",
     liveUpdatedAt: team.liveUpdatedAt || "",
-    sourceBoardName: team.sourceBoardName || "",
+    sourceBoardName: team.sourceBoardName || team.sourceBoard || "",
     sprintName: team.sprintName || "",
     sprintState: team.sprintState || "",
     children: Array.isArray(team.children) ? team.children : [],
@@ -271,8 +272,7 @@ export default function XFNCenter() {
   const [view, setView] = useState(() => loadSavedObject(VIEW_STORAGE_KEY, defaultView));
   const [issueEdits, setIssueEdits] = useState(() => loadSavedObject(EDITS_STORAGE_KEY, {}));
   const [manualTeams, setManualTeams] = useState(() => loadSavedArray(MANUAL_TEAMS_STORAGE_KEY));
-  const [boards, setBoards] = useState([]);
-  const [boardPayload, setBoardPayload] = useState({ teams: [], total: 0, lastSync: "", sprintLabel: "" });
+  const [xfnPayload, setXfnPayload] = useState({ boards: [], rows: [], lastSync: "" });
   const [spaceName, setSpaceName] = useState("Alli AI & Software Engineering");
   const [spaceKey, setSpaceKey] = useState("ALLI");
   const [selectedIssueKey, setSelectedIssueKey] = useState("");
@@ -296,49 +296,39 @@ export default function XFNCenter() {
   }, [manualTeams]);
 
   useEffect(() => {
-    fetchJson("/api/boards")
+    fetchJson("/api/xfn-sync")
       .then((payload) => {
         const nextBoards = payload.boards || [];
-        setBoards(nextBoards);
+        setXfnPayload(payload);
         setSpaceName(payload.spaceProjectName || "Alli AI & Software Engineering");
         setSpaceKey(payload.spaceProjectKey || "ALLI");
         setView((current) => ({
           ...current,
-          boardId: current.boardId || String(nextBoards[0]?.id || ""),
+          boardId: current.boardId || String(nextBoards[0]?.boardId || ""),
         }));
       })
       .catch((fetchError) => setError(fetchError.message))
-      .finally(() => setLoadingBoards(false));
-  }, []);
-
-  useEffect(() => {
-    if (!view.boardId) {
-      return;
-    }
-
-    fetchJson(`/api/board?boardId=${encodeURIComponent(view.boardId)}&maxResults=500`)
-      .then((payload) => {
-        setBoardPayload(payload);
-        setSpaceName(payload.spaceProjectName || "Alli AI & Software Engineering");
-        setSpaceKey(payload.spaceProjectKey || "ALLI");
-      })
-      .catch((fetchError) => setError(fetchError.message))
-      .finally(() => setLoadingBoard(false));
-  }, [view.boardId, refreshToken]);
+      .finally(() => {
+        setLoadingBoards(false);
+        setLoadingBoard(false);
+      });
+  }, [refreshToken]);
 
   const selectedBoard = useMemo(
-    () => boards.find((board) => String(board.id) === view.boardId) || null,
-    [boards, view.boardId],
+    () => xfnPayload.boards.find((board) => String(board.boardId) === view.boardId) || null,
+    [view.boardId, xfnPayload.boards],
   );
 
   const liveTeams = useMemo(
     () =>
-      (boardPayload.teams || []).map((team) => {
-        const base = toEditableBase(team);
-        const edits = issueEdits[base.storageKey] || {};
-        return { ...base, ...edits };
-      }),
-    [boardPayload.teams, issueEdits],
+      (xfnPayload.rows || [])
+        .filter((team) => String(team.boardId) === view.boardId)
+        .map((team) => {
+          const base = toEditableBase(team);
+          const edits = issueEdits[base.storageKey] || {};
+          return { ...base, ...edits };
+        }),
+    [issueEdits, view.boardId, xfnPayload.rows],
   );
 
   const scopedManualTeams = useMemo(
@@ -350,11 +340,11 @@ export default function XFNCenter() {
 
   const boardOptions = useMemo(
     () =>
-      boards.map((board) => ({
-        value: String(board.id),
-        label: board.name,
+      xfnPayload.boards.map((board) => ({
+        value: String(board.boardId),
+        label: board.boardName,
       })),
-    [boards],
+    [xfnPayload.boards],
   );
 
   const groupOptions = useMemo(
@@ -468,7 +458,7 @@ export default function XFNCenter() {
         label: "Filtered Results",
         value: String(filteredTeams.length),
         sub: "visible now",
-        delta: selectedBoard?.name || "Current board",
+        delta: selectedBoard?.boardName || "Current board",
         tone: "green",
         icon: "CheckCircle2",
       },
@@ -489,7 +479,7 @@ export default function XFNCenter() {
         icon: "Users",
       },
     ];
-  }, [filteredTeams.length, scopedManualTeams.length, selectedBoard?.name, teams]);
+  }, [filteredTeams.length, scopedManualTeams.length, selectedBoard?.boardName, teams]);
 
   function updateView(key, value) {
     setView((current) => ({ ...current, [key]: value }));
@@ -501,7 +491,7 @@ export default function XFNCenter() {
       return;
     }
 
-    const entry = createManualTeam(view.boardId, selectedBoard?.name);
+    const entry = createManualTeam(view.boardId, selectedBoard?.boardName);
     setManualTeams((current) => [entry, ...current]);
     setSelectedIssueKey(entry.storageKey);
     setPage(1);
@@ -575,7 +565,7 @@ export default function XFNCenter() {
             <strong>{spaceKey}</strong>
           </div>
 
-          <span className="sync-meta">Last Jira pull: {formatSyncTime(boardPayload.lastSync)}</span>
+          <span className="sync-meta">Last Jira pull: {formatSyncTime(xfnPayload.lastSync)}</span>
 
           <button className="ghost-button" onClick={refreshBoardData} type="button">
             <RefreshCw size={16} />
@@ -591,8 +581,8 @@ export default function XFNCenter() {
 
       <section className="board-context">
         <div>
-          <h2>{selectedBoard?.name || "Loading board"}</h2>
-          <p>{boardPayload.sprintLabel || "Current or most recent sprint scope will appear here once Jira data loads."}</p>
+          <h2>{selectedBoard?.boardName || "Loading board"}</h2>
+          <p>{selectedBoard?.sprintLabel || "Current or most recent sprint scope will appear here once Jira data loads."}</p>
         </div>
         <div className="source-block">
           <small>Boards included from the ALLI space</small>
