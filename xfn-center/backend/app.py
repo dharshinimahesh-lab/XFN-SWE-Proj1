@@ -6,9 +6,6 @@ from flask_cors import CORS
 from backend.routes.boards import boards_bp
 from backend.config import get_settings
 from backend.jira_client import JiraClient
-from backend.routes.dashboard import dashboard_bp
-from backend.routes.issues import issues_bp
-from backend.routes.sync import sync_bp
 from backend.routes.teams import teams_bp
 
 
@@ -22,9 +19,6 @@ def create_app() -> Flask:
 
     app.register_blueprint(boards_bp)
     app.register_blueprint(teams_bp)
-    app.register_blueprint(dashboard_bp)
-    app.register_blueprint(issues_bp)
-    app.register_blueprint(sync_bp)
 
     @app.get("/api/health")
     def healthcheck():
