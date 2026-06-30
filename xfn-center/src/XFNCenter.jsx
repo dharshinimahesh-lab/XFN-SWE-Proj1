@@ -19,6 +19,7 @@ import {
   Users,
 } from "lucide-react";
 import "./XFNCenter.css";
+import Dropdown from "./components/Dropdown";
 import { TEAM_FIELDS, createEmptyTeamData } from "./teamCatalog";
 
 const PAGE_SIZE = 6;
@@ -190,20 +191,7 @@ function createManualTeam(boardId, boardName) {
 }
 
 function FilterSelect({ label, value, options, onChange }) {
-  return (
-    <label className="filter filter-select">
-      <span>
-        <small>{label}</small>
-        <select value={value} onChange={(event) => onChange(event.target.value)}>
-          {options.map((option) => (
-            <option key={option.value ?? option} value={option.value ?? option}>
-              {option.label ?? option}
-            </option>
-          ))}
-        </select>
-      </span>
-    </label>
-  );
+  return <Dropdown className="filter filter-select" label={label} onChange={onChange} options={options} value={value} />;
 }
 
 function StatusPill({ children, tone = "blue" }) {
