@@ -155,12 +155,18 @@ def _board_group_spec(board_key: str) -> dict[str, Any] | None:
 
 
 def _latest_or_active_sprint(client: JiraClient, *, board_id: int) -> dict[str, Any] | None:
-    active = client.get_board_sprints(board_id=board_id, state="active", max_results=20)
+    try:
+        active = client.get_board_sprints(board_id=board_id, state="active", max_results=20)
+    except Exception:
+        return None
     if active:
         active.sort(key=lambda sprint: sprint.get("startDate") or sprint.get("id", 0), reverse=True)
         return active[0]
 
-    closed = client.get_board_sprints(board_id=board_id, state="closed", max_results=100)
+    try:
+        closed = client.get_board_sprints(board_id=board_id, state="closed", max_results=100)
+    except Exception:
+        return None
     closed = [sprint for sprint in closed if sprint.get("endDate")]
     closed.sort(key=lambda sprint: sprint.get("endDate") or "", reverse=True)
     return closed[0] if closed else None
@@ -168,6 +174,9 @@ def _latest_or_active_sprint(client: JiraClient, *, board_id: int) -> dict[str, 
 
 def _normalize_child_issue(issue: dict[str, Any]) -> dict[str, Any]:
     fields = issue.get("fields", {})
+    sprint_values = fields.get(FIELDS["sprint"]) or []
+    active_sprint = next((sprint for sprint in sprint_values if sprint.get("state") == "active"), None)
+    recent_sprint = active_sprint or (sprint_values[-1] if sprint_values else None)
     return {
         "issueKey": issue.get("key"),
         "issueUrl": f"{JIRA_BROWSE_BASE}/{issue.get('key')}",
@@ -175,6 +184,9 @@ def _normalize_child_issue(issue: dict[str, Any]) -> dict[str, Any]:
         "status": _first_text(fields.get(FIELDS["status"]), fallback="Unknown"),
         "components": _normalize_components(fields.get(FIELDS["components"])),
         "epicKey": fields.get(FIELDS["epic_link"]),
+        "sprintName": recent_sprint.get("name", "") if recent_sprint else "",
+        "sprintState": recent_sprint.get("state", "") if recent_sprint else "",
+        "sprintBoardId": recent_sprint.get("boardId") if recent_sprint else None,
     }
 
 
@@ -221,6 +233,7 @@ def _issue_fields_for_sprint() -> list[str]:
         FIELDS["summary"],
         FIELDS["status"],
         FIELDS["assignee"],
+        FIELDS["sprint"],
         FIELDS["epic_link"],
         FIELDS["components"],
         FIELDS["responsible_team"],
@@ -228,6 +241,20 @@ def _issue_fields_for_sprint() -> list[str]:
         FIELDS["accountable_group"],
         FIELDS["issuetype"],
     ]
+
+
+def _group_slug(group_name: str) -> str:
+    return group_name.lower().replace("alli - ", "").strip()
+
+
+def _epic_matches_group(epic: dict[str, Any], group: dict[str, Any]) -> bool:
+    target = _group_slug(group["name"])
+    epic_group = (epic.get("group") or "").lower().strip()
+    return target in epic_group
+
+
+def _escaped_key_csv(issue_keys: list[str]) -> str:
+    return ",".join(f'"{key.replace(chr(34), chr(92) + chr(34))}"' for key in issue_keys)
 
 
 def _issue_fields_for_epics() -> list[str]:
@@ -291,6 +318,8 @@ def build_board_payload(client: JiraClient, *, board_key: str, max_results: int 
         raise ValueError(f"Board {board_key} is not in the {ALLI_PROJECT_NAME} space")
 
     alli_boards = _get_alli_boards(client)
+    all_boards = client.get_boards(max_results=300)
+    board_names_by_id = {board["id"]: board["name"] for board in all_boards}
     alli_by_name = {board["name"]: board for board in alli_boards}
     source_boards = [alli_by_name[name] for name in group["source_board_names"] if name in alli_by_name]
     if not source_boards:
@@ -302,13 +331,10 @@ def build_board_payload(client: JiraClient, *, board_key: str, max_results: int 
 
     for board in source_boards:
         sprint = _latest_or_active_sprint(client, board_id=board["id"])
-        if sprint is None:
-            continue
-
-        sprint_labels.append(f"{board['name']}: {sprint.get('name', 'Unknown Sprint')}")
-        issue_payload = client.get_board_sprint_issues(
+        if sprint is not None:
+            sprint_labels.append(f"{board['name']}: {sprint.get('name', 'Unknown Sprint')}")
+        issue_payload = client.get_board_issues(
             board_id=board["id"],
-            sprint_id=sprint["id"],
             fields=_issue_fields_for_sprint(),
             max_results=max_results,
         )
@@ -324,8 +350,8 @@ def build_board_payload(client: JiraClient, *, board_key: str, max_results: int 
                     epic_key,
                     {
                         "sourceBoardName": board["name"],
-                        "sprintName": sprint.get("name", ""),
-                        "sprintState": sprint.get("state", ""),
+                        "sprintName": sprint.get("name", "") if sprint else "",
+                        "sprintState": sprint.get("state", "") if sprint else "",
                     },
                 )
             elif issue_type == "Epic":
@@ -334,10 +360,41 @@ def build_board_payload(client: JiraClient, *, board_key: str, max_results: int 
                     child["issueKey"],
                     {
                         "sourceBoardName": board["name"],
-                        "sprintName": sprint.get("name", ""),
-                        "sprintState": sprint.get("state", ""),
+                        "sprintName": sprint.get("name", "") if sprint else "",
+                        "sprintState": sprint.get("state", "") if sprint else "",
                     },
                 )
+
+    candidate_epic_issues = client.search_issues(
+        jql=f"project = {ALLI_PROJECT_KEY} AND issuetype = Epic ORDER BY updated DESC",
+        fields=_issue_fields_for_epics(),
+        max_results=500,
+    )
+    candidate_epics = [_normalize_epic(issue) for issue in candidate_epic_issues]
+
+    for epic in candidate_epics:
+        if not _epic_matches_group(epic, group) or epic["issueKey"] in epic_children:
+            continue
+
+        active_children = client.search_issues(
+            jql=f'project = {ALLI_PROJECT_KEY} AND sprint in openSprints() AND "Epic Link" = {epic["issueKey"]} ORDER BY updated DESC',
+            fields=_issue_fields_for_sprint(),
+            max_results=100,
+        )
+        if not active_children:
+            continue
+
+        normalized_children = [_normalize_child_issue(issue) for issue in active_children]
+        epic_children[epic["issueKey"]].extend(normalized_children)
+        first_child = normalized_children[0]
+        epic_source_meta.setdefault(
+            epic["issueKey"],
+            {
+                "sourceBoardName": board_names_by_id.get(first_child["sprintBoardId"], "Cross-Functional Board"),
+                "sprintName": first_child["sprintName"],
+                "sprintState": first_child["sprintState"],
+            },
+        )
 
     epic_keys = list(epic_children.keys())
     if not epic_keys:
@@ -354,9 +411,8 @@ def build_board_payload(client: JiraClient, *, board_key: str, max_results: int 
             "sprintLabel": "No current or recent sprint issues linked to epics",
         }
 
-    escaped_keys = ",".join(f'"{key.replace(chr(34), chr(92) + chr(34))}"' for key in epic_keys)
     epic_issues = client.search_issues(
-        jql=f"key in ({escaped_keys}) ORDER BY updated DESC",
+        jql=f"key in ({_escaped_key_csv(epic_keys)}) ORDER BY updated DESC",
         fields=_issue_fields_for_epics(),
         max_results=len(epic_keys),
     )
@@ -366,6 +422,8 @@ def build_board_payload(client: JiraClient, *, board_key: str, max_results: int 
     for epic_key in epic_keys:
         epic = epics_by_key.get(epic_key)
         if epic is None:
+            continue
+        if not _epic_matches_group(epic, group):
             continue
 
         children = epic_children[epic_key]
@@ -412,7 +470,8 @@ def build_board_payload(client: JiraClient, *, board_key: str, max_results: int 
                 }
             )
 
-    entries.sort(key=lambda item: (item["sourceBoardName"], item["team"], item["productGoal"]))
+    unique_entries = {entry["storageKey"]: entry for entry in entries}
+    entries = sorted(unique_entries.values(), key=lambda item: (item["sourceBoardName"], item["team"], item["productGoal"]))
 
     risk_entries = sum(1 for entry in entries if entry["impactsOrRisks"])
     needs_entries = sum(1 for entry in entries if entry["needsFromOtherTeams"])

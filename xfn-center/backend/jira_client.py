@@ -96,12 +96,28 @@ class JiraClient:
         fields: list[str],
         max_results: int = 100,
     ) -> list[dict[str, Any]]:
-        payload = self._request_json(
-            "/rest/api/3/search/jql",
-            {
-                "jql": jql,
-                "maxResults": max_results,
-                "fields": ",".join(fields),
-            },
-        )
-        return payload.get("issues", [])
+        issues: list[dict[str, Any]] = []
+        start_at = 0
+        page_size = min(max_results, 100)
+
+        while len(issues) < max_results:
+            payload = self._request_json(
+                "/rest/api/3/search/jql",
+                {
+                    "jql": jql,
+                    "maxResults": page_size,
+                    "startAt": start_at,
+                    "fields": ",".join(fields),
+                },
+            )
+            page_issues = payload.get("issues", [])
+            if not page_issues:
+                break
+
+            remaining = max_results - len(issues)
+            issues.extend(page_issues[:remaining])
+            if len(page_issues) < page_size:
+                break
+            start_at += len(page_issues)
+
+        return issues

@@ -258,6 +258,10 @@ function healthTone(team) {
   return "purple";
 }
 
+function normalizeOptionValue(value, options, fallback = "All") {
+  return options.includes(value) ? value : fallback;
+}
+
 export default function XFNCenter() {
   const [view, setView] = useState(() => loadSavedObject(VIEW_STORAGE_KEY, defaultView));
   const [issueEdits, setIssueEdits] = useState(() => loadSavedObject(EDITS_STORAGE_KEY, {}));
@@ -307,7 +311,7 @@ export default function XFNCenter() {
       return;
     }
 
-    fetchJson(`/api/board?boardId=${encodeURIComponent(view.boardId)}&maxResults=200`)
+    fetchJson(`/api/board?boardId=${encodeURIComponent(view.boardId)}&maxResults=500`)
       .then((payload) => {
         setBoardPayload(payload);
         setSpaceName(payload.spaceProjectName || "Alli AI & Software Engineering");
@@ -353,29 +357,54 @@ export default function XFNCenter() {
     [teams],
   );
 
+  const effectiveBoardId = useMemo(
+    () => normalizeOptionValue(view.boardId, boardOptions.map((option) => option.value), boardOptions[0]?.value || ""),
+    [boardOptions, view.boardId],
+  );
+
+  const effectiveGroup = useMemo(
+    () => normalizeOptionValue(view.group, groupOptions),
+    [groupOptions, view.group],
+  );
+
   const teamOptions = useMemo(() => {
-    const scopedTeams = view.group === "All" ? teams : teams.filter((team) => team.group === view.group);
+    const scopedTeams = effectiveGroup === "All" ? teams : teams.filter((team) => team.group === effectiveGroup);
     return ["All", ...new Set(scopedTeams.map((team) => team.team).filter(Boolean))];
-  }, [teams, view.group]);
+  }, [effectiveGroup, teams]);
+
+  const effectiveTeam = useMemo(
+    () => normalizeOptionValue(view.team, teamOptions),
+    [teamOptions, view.team],
+  );
+
+  const effectiveRisk = useMemo(
+    () => normalizeOptionValue(view.risk, ["All", "Flagged", "Clear"]),
+    [view.risk],
+  );
+
+  const effectiveSort = useMemo(
+    () => normalizeOptionValue(view.sortBy, ["Product Goal", "Team", "Group", "Updated"], "Product Goal"),
+    [view.sortBy],
+  );
 
   const filteredTeams = useMemo(() => {
     const search = view.search.trim().toLowerCase();
 
     return sortTeams(
       teams.filter((team) => {
-        if (view.group !== "All" && team.group !== view.group) {
+        if (effectiveGroup !== "All" && team.group !== effectiveGroup) {
           return false;
         }
 
-        if (view.team !== "All" && team.team !== view.team) {
+        if (effectiveTeam !== "All" && team.team !== effectiveTeam) {
           return false;
         }
 
-        if (view.risk === "Flagged" && !teamHasRisks(team)) {
+        if (effectiveRisk === "Flagged" && !teamHasRisks(team)) {
           return false;
         }
 
-        if (view.risk === "Clear" && teamHasRisks(team)) {
+        if (effectiveRisk === "Clear" && teamHasRisks(team)) {
           return false;
         }
 
@@ -401,9 +430,9 @@ export default function XFNCenter() {
           .toLowerCase()
           .includes(search);
       }),
-      view.sortBy,
+      effectiveSort,
     );
-  }, [teams, view]);
+  }, [effectiveGroup, effectiveRisk, effectiveSort, effectiveTeam, teams, view.search]);
 
   const totalPages = Math.max(1, Math.ceil(filteredTeams.length / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
@@ -580,7 +609,7 @@ export default function XFNCenter() {
 
         <FilterSelect
           label="Board"
-          value={view.boardId}
+          value={effectiveBoardId}
           options={boardOptions}
           onChange={(value) => {
             setLoadingBoard(true);
@@ -590,13 +619,13 @@ export default function XFNCenter() {
         />
         <FilterSelect
           label="Team"
-          value={view.team}
+          value={effectiveTeam}
           options={teamOptions}
           onChange={(value) => updateView("team", value)}
         />
         <FilterSelect
           label="Group"
-          value={view.group}
+          value={effectiveGroup}
           options={groupOptions}
           onChange={(value) => {
             setPage(1);
@@ -609,13 +638,13 @@ export default function XFNCenter() {
         />
         <FilterSelect
           label="Risk"
-          value={view.risk}
+          value={effectiveRisk}
           options={["All", "Flagged", "Clear"]}
           onChange={(value) => updateView("risk", value)}
         />
         <FilterSelect
           label="Sort"
-          value={view.sortBy}
+          value={effectiveSort}
           options={["Product Goal", "Team", "Group", "Updated"]}
           onChange={(value) => updateView("sortBy", value)}
         />

@@ -16,7 +16,7 @@ def get_boards():
 @boards_bp.get("/api/board")
 def get_board():
     board_id = request.args.get("boardId", "").strip()
-    max_results = min(int(request.args.get("maxResults", "200")), 500)
+    max_results = min(int(request.args.get("maxResults", "500")), 1000)
     try:
         payload = build_board_payload(
             current_app.config["jira_client"],
