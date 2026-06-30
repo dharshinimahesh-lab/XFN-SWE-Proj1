@@ -148,11 +148,15 @@ function toEditableBase(team) {
     storageKey: team.storageKey || team.issueKey || `entry-${Math.random().toString(36).slice(2, 8)}`,
     issueKey: team.issueKey || "",
     issueUrl: team.issueUrl || "",
+    productGoalUrl: team.productGoalUrl || team.issueUrl || "",
     team: team.team || "",
     group: team.group || "",
+    pmOwner: team.pmOwner || "",
+    tlOwner: team.tlOwner || "",
     status: team.status || "",
     assignee: team.assignee || "",
     productGoal: team.productGoal || "",
+    sprintGoal: normalizeText(team.sprintGoal),
     currentProgress: normalizeText(team.currentProgress),
     upcomingWork: normalizeText(team.upcomingWork),
     impactsOrRisks: normalizeText(team.impactsOrRisks),
@@ -173,6 +177,7 @@ function createManualTeam(boardId, boardName) {
     storageKey: `manual-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     boardId,
     issueUrl: "",
+    productGoalUrl: "",
     health: "Manual",
     liveUpdatedAt: "",
     sourceBoardName: boardName || "Manual Team",
@@ -560,7 +565,7 @@ export default function XFNCenter() {
           <div className="brand-mark">XFN</div>
           <div>
             <p className="eyebrow">{spaceName}</p>
-            <h1>Epic Team Tracker</h1>
+            <h1>Scrum Team Tracker</h1>
           </div>
         </div>
 
@@ -618,7 +623,7 @@ export default function XFNCenter() {
           }}
         />
         <FilterSelect
-          label="Team"
+          label="Scrum Team"
           value={effectiveTeam}
           options={teamOptions}
           onChange={(value) => updateView("team", value)}
@@ -682,7 +687,7 @@ export default function XFNCenter() {
           <article className="panel">
             <div className="panel-header">
               <h2>Board Entries</h2>
-              <p>Each row maps to a Jira epic, with the team name coming from the epic component and the group coming from the responsible team.</p>
+              <p>Each row maps to a Jira product-goal epic, with scrum team from `cf[10370]`, group from `cf[10670]`, and editable sprint-summary fields layered on top.</p>
             </div>
 
             <div className="table-wrap">
@@ -690,7 +695,7 @@ export default function XFNCenter() {
                 <thead>
                   <tr>
                     <th>Epic</th>
-                    <th>Team</th>
+                    <th>Scrum Team</th>
                     <th>Group</th>
                     <th>Product Goal</th>
                     <th>Risks</th>
@@ -722,7 +727,16 @@ export default function XFNCenter() {
                       <td>
                         <StatusPill tone={healthTone(row)}>{previewText(row.group)}</StatusPill>
                       </td>
-                      <td>{compactText(row.productGoal)}</td>
+                      <td>
+                        {row.productGoalUrl ? (
+                          <a className="team-link" href={row.productGoalUrl} onClick={(event) => event.stopPropagation()} rel="noreferrer" target="_blank">
+                            {compactText(`${row.issueKey ? `${row.issueKey}: ` : ""}${row.productGoal}`, 88)}
+                            <ExternalLink size={14} />
+                          </a>
+                        ) : (
+                          compactText(row.productGoal)
+                        )}
+                      </td>
                       <td>{teamHasRisks(row) ? compactText(row.impactsOrRisks, 56) : <span className="empty-cell">—</span>}</td>
                       <td>{teamHasNeeds(row) ? compactText(row.needsFromOtherTeams, 56) : <span className="empty-cell">—</span>}</td>
                       <td>{previewText(row.sourceBoardName)}</td>
@@ -789,11 +803,13 @@ export default function XFNCenter() {
                   />
                   <DetailItem icon={BarChart3} tone="blue" title="Status" body={previewText(selectedTeam.status)} />
                   <DetailItem icon={Users} tone="purple" title="Group" body={previewText(selectedTeam.group)} />
-                  <DetailItem icon={Activity} tone="green" title="Team" body={previewText(selectedTeam.team)} />
+                  <DetailItem icon={Activity} tone="green" title="Scrum Team" body={previewText(selectedTeam.team)} />
                 </div>
 
                 <div className="details-stack">
                   <DetailItem icon={Target} tone="blue" title="Product Goal" body={previewText(selectedTeam.productGoal)} />
+                  <DetailItem icon={Users} tone="purple" title="Owners" body={`PM: ${previewText(selectedTeam.pmOwner)} • TL: ${previewText(selectedTeam.tlOwner)}`} />
+                  <DetailItem icon={CheckCircle2} tone="green" title="Sprint Goal" body={previewText(selectedTeam.sprintGoal)} />
                   <DetailItem
                     icon={Link2}
                     tone="orange"
@@ -869,10 +885,10 @@ export default function XFNCenter() {
                 </div>
 
                 <div className="detail-action-group">
-                  {selectedTeam.issueUrl ? (
-                    <a className="secondary-button link-button" href={selectedTeam.issueUrl} rel="noreferrer" target="_blank">
+                  {selectedTeam.productGoalUrl || selectedTeam.issueUrl ? (
+                    <a className="secondary-button link-button" href={selectedTeam.productGoalUrl || selectedTeam.issueUrl} rel="noreferrer" target="_blank">
                       <ExternalLink size={16} />
-                      Open in Jira
+                      Open Product Goal
                     </a>
                   ) : null}
                   <button className="ghost-button detail-refresh" onClick={refreshBoardData} type="button">

@@ -196,16 +196,24 @@ def _normalize_epic(issue: dict[str, Any]) -> dict[str, Any]:
     dependencies = _string_list(fields.get(FIELDS["dependencies"]))
     blockers = _string_list(fields.get(FIELDS["blocking_deliverable"]))
     needs = [*dependencies, *blockers]
+    components = _normalize_components(fields.get(FIELDS["components"]))
     return {
         "issueKey": issue.get("key"),
         "issueUrl": f"{JIRA_BROWSE_BASE}/{issue.get('key')}",
         "productGoal": fields.get(FIELDS["summary"], ""),
-        "components": _normalize_components(fields.get(FIELDS["components"])),
+        "productGoalUrl": f"{JIRA_BROWSE_BASE}/{issue.get('key')}",
+        "components": components,
+        "scrumTeam": _first_text(
+            fields.get(FIELDS["responsible_team_alt"]),
+            fields.get(FIELDS["team_alt"]),
+            components[0] if components else "",
+            fallback="Unscoped Team",
+        ),
         "group": _first_text(
             fields.get(FIELDS["responsible_team"]),
             fields.get(FIELDS["responsible_team_alt"]),
             fields.get(FIELDS["accountable_group"]),
-            fallback="Unscoped",
+            fallback="",
         ),
         "status": _first_text(fields.get(FIELDS["status"]), fallback="Unknown"),
         "assignee": _first_text(fields.get(FIELDS["assignee"]), fallback="Unassigned"),
@@ -352,6 +360,7 @@ def build_board_payload(client: JiraClient, *, board_key: str, max_results: int 
                         "sourceBoardName": board["name"],
                         "sprintName": sprint.get("name", "") if sprint else "",
                         "sprintState": sprint.get("state", "") if sprint else "",
+                        "sprintGoal": sprint.get("goal", "") if sprint else "",
                     },
                 )
             elif issue_type == "Epic":
@@ -362,6 +371,7 @@ def build_board_payload(client: JiraClient, *, board_key: str, max_results: int 
                         "sourceBoardName": board["name"],
                         "sprintName": sprint.get("name", "") if sprint else "",
                         "sprintState": sprint.get("state", "") if sprint else "",
+                        "sprintGoal": sprint.get("goal", "") if sprint else "",
                     },
                 )
 
@@ -393,6 +403,7 @@ def build_board_payload(client: JiraClient, *, board_key: str, max_results: int 
                 "sourceBoardName": board_names_by_id.get(first_child["sprintBoardId"], "Cross-Functional Board"),
                 "sprintName": first_child["sprintName"],
                 "sprintState": first_child["sprintState"],
+                "sprintGoal": "",
             },
         )
 
@@ -427,48 +438,35 @@ def build_board_payload(client: JiraClient, *, board_key: str, max_results: int 
             continue
 
         children = epic_children[epic_key]
-        component_names = epic["components"] or sorted(
+        meta = epic_source_meta[epic_key]
+        storage_key = f"{group['key']}::{epic_key}"
+        entries.append(
             {
-                component
-                for child in children
-                for component in child["components"]
-                if component
+                "storageKey": storage_key,
+                "issueKey": epic["issueKey"],
+                "issueUrl": epic["issueUrl"],
+                "productGoalUrl": epic["productGoalUrl"],
+                "productGoal": epic["productGoal"],
+                "team": epic["scrumTeam"],
+                "group": epic["group"],
+                "pmOwner": "",
+                "tlOwner": "",
+                "status": epic["status"],
+                "assignee": epic["assignee"],
+                "sprintGoal": meta.get("sprintGoal", ""),
+                "currentProgress": epic["currentProgress"] or _format_child_issue_summaries(children),
+                "upcomingWork": "",
+                "impactsOrRisks": epic["impactsOrRisks"],
+                "needsFromOtherTeams": epic["needsFromOtherTeams"],
+                "health": epic["health"],
+                "liveUpdatedAt": epic["updated"],
+                "sourceBoardName": meta["sourceBoardName"],
+                "sprintName": meta["sprintName"],
+                "sprintState": meta["sprintState"],
+                "children": children,
+                "manual": False,
             }
         )
-        if not component_names:
-            component_names = ["Unassigned Component"]
-
-        for component_name in component_names:
-            matching_children = [
-                child
-                for child in children
-                if not child["components"] or component_name in child["components"]
-            ]
-            meta = epic_source_meta[epic_key]
-            storage_key = f"{group['key']}::{epic_key}::{component_name}"
-            entries.append(
-                {
-                    "storageKey": storage_key,
-                    "issueKey": epic["issueKey"],
-                    "issueUrl": epic["issueUrl"],
-                    "productGoal": epic["productGoal"],
-                    "team": component_name,
-                    "group": epic["group"],
-                    "status": epic["status"],
-                    "assignee": epic["assignee"],
-                    "currentProgress": epic["currentProgress"] or _format_child_issue_summaries(matching_children),
-                    "upcomingWork": "",
-                    "impactsOrRisks": epic["impactsOrRisks"],
-                    "needsFromOtherTeams": epic["needsFromOtherTeams"],
-                    "health": epic["health"],
-                    "liveUpdatedAt": epic["updated"],
-                    "sourceBoardName": meta["sourceBoardName"],
-                    "sprintName": meta["sprintName"],
-                    "sprintState": meta["sprintState"],
-                    "children": matching_children,
-                    "manual": False,
-                }
-            )
 
     unique_entries = {entry["storageKey"]: entry for entry in entries}
     entries = sorted(unique_entries.values(), key=lambda item: (item["sourceBoardName"], item["team"], item["productGoal"]))

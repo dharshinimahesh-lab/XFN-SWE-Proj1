@@ -1,10 +1,11 @@
 export const TEAM_FIELDS = [
-  { key: "issueKey", label: "Epic Key", multiline: false },
-  { key: "team", label: "Team", multiline: false },
+  { key: "team", label: "Scrum Team", multiline: false },
   { key: "group", label: "Group", multiline: false },
-  { key: "status", label: "Status", multiline: false },
-  { key: "assignee", label: "Assignee", multiline: false },
+  { key: "pmOwner", label: "PM Owner", multiline: false },
+  { key: "tlOwner", label: "TL Owner", multiline: false },
+  { key: "productGoalUrl", label: "Product Goal Jira Link", multiline: false },
   { key: "productGoal", label: "Product Goal", multiline: true },
+  { key: "sprintGoal", label: "Sprint Goal", multiline: true },
   { key: "currentProgress", label: "Current Progress", multiline: true },
   { key: "upcomingWork", label: "Upcoming Work", multiline: true },
   { key: "impactsOrRisks", label: "Impacts or Risks", multiline: true },
@@ -13,12 +14,13 @@ export const TEAM_FIELDS = [
 
 export function createEmptyTeamData() {
   return {
-    issueKey: "",
     team: "",
     group: "",
-    status: "",
-    assignee: "",
+    pmOwner: "",
+    tlOwner: "",
+    productGoalUrl: "",
     productGoal: "",
+    sprintGoal: "",
     currentProgress: "",
     upcomingWork: "",
     impactsOrRisks: "",
