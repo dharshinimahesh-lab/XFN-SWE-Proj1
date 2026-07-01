@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -89,6 +89,36 @@ function formatSyncTime(value) {
   }).format(new Date(value));
 }
 
+function formatDateOnly(value) {
+  if (!value) {
+    return "";
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return String(value).slice(0, 10);
+  }
+
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+  }).format(parsed);
+}
+
+function sprintWindowLabel(team) {
+  const start = formatDateOnly(team.sprintStartDate);
+  const end = formatDateOnly(team.sprintEndDate);
+  if (start && end) {
+    return `${start} to ${end}`;
+  }
+  return start || end;
+}
+
+function sprintSummary(team) {
+  const parts = [team.sprintName, sprintWindowLabel(team), team.sprintCadenceLabel].filter(Boolean);
+  return parts.join(" • ");
+}
+
 function normalizeText(value) {
   if (Array.isArray(value)) {
     return value.filter(Boolean).join("\n");
@@ -103,6 +133,23 @@ function hasText(value) {
 function previewText(value) {
   const normalized = normalizeText(value).trim();
   return normalized || "—";
+}
+
+function jiraFieldText(value) {
+  const normalized = normalizeText(value).trim();
+  return normalized || "Not set in Jira";
+}
+
+function ownersSummary(team) {
+  return `PM: ${jiraFieldText(team.pmOwner)} • TL/Owner: ${jiraFieldText(team.tlOwner)}`;
+}
+
+function sprintCadenceDetail(team) {
+  const parts = [team.sprintCadenceLabel, sprintWindowLabel(team)].filter(Boolean);
+  if (!team.sprintCadenceLabel && team.sprintDurationDays) {
+    parts.unshift(`${team.sprintDurationDays} day sprint`);
+  }
+  return parts.join(" • ") || "Not set in Jira";
 }
 
 function compactText(value, max = 88) {
@@ -147,6 +194,7 @@ function toEditableBase(team) {
   return {
     ...createEmptyTeamData(),
     storageKey: team.storageKey || team.issueKey || team.productGoalKey || `entry-${Math.random().toString(36).slice(2, 8)}`,
+    legacyStorageKey: team.legacyStorageKey || "",
     boardId: team.boardId || "",
     issueKey: team.issueKey || team.productGoalKey || "",
     issueUrl: team.issueUrl || "",
@@ -165,9 +213,16 @@ function toEditableBase(team) {
     needsFromOtherTeams: normalizeText(team.needsFromOtherTeams),
     health: team.health || "",
     liveUpdatedAt: team.liveUpdatedAt || "",
+    sourceBoardId: team.sourceBoardId || "",
     sourceBoardName: team.sourceBoardName || team.sourceBoard || "",
+    sprintId: team.sprintId || "",
     sprintName: team.sprintName || "",
     sprintState: team.sprintState || "",
+    sprintStartDate: team.sprintStartDate || "",
+    sprintEndDate: team.sprintEndDate || "",
+    sprintCompleteDate: team.sprintCompleteDate || "",
+    sprintDurationDays: team.sprintDurationDays || "",
+    sprintCadenceLabel: team.sprintCadenceLabel || "",
     children: Array.isArray(team.children) ? team.children : [],
     manual: Boolean(team.manual),
   };
@@ -182,9 +237,16 @@ function createManualTeam(boardId, boardName) {
     productGoalUrl: "",
     health: "Manual",
     liveUpdatedAt: "",
+    sourceBoardId: "",
     sourceBoardName: boardName || "Manual Team",
+    sprintId: "",
     sprintName: "",
     sprintState: "manual",
+    sprintStartDate: "",
+    sprintEndDate: "",
+    sprintCompleteDate: "",
+    sprintDurationDays: "",
+    sprintCadenceLabel: "",
     children: [],
     manual: true,
   };
@@ -256,7 +318,40 @@ function normalizeOptionValue(value, options, fallback = "All") {
   return options.includes(value) ? value : fallback;
 }
 
+function titleCase(value) {
+  const text = value ? String(value) : "";
+  return text ? `${text.charAt(0).toUpperCase()}${text.slice(1)}` : "Rest";
+}
+
+function mcpStatusLabel(payload) {
+  if (!payload?.mcpStatus) {
+    return "";
+  }
+  return `MCP ${titleCase(payload.mcpStatus)}`;
+}
+
+function normalizeBoard(board) {
+  const boardId = String(board.boardId ?? board.id ?? "");
+  const boardName = board.boardName ?? board.name ?? boardId;
+  return {
+    boardId,
+    boardName,
+    sprintLabel: board.sprintLabel || "",
+    totalEntries: board.totalEntries ?? board.total ?? 0,
+    sourceBoards: Array.isArray(board.sourceBoards) ? board.sourceBoards : [],
+  };
+}
+
+function rowsFromBoardPayload(payload) {
+  return (payload.teams || []).map((entry) => ({
+    ...entry,
+    boardId: payload.boardId,
+    boardName: payload.boardName,
+  }));
+}
+
 export default function XFNCenter() {
+  const detailPanelRef = useRef(null);
   const [view, setView] = useState(() => loadSavedObject(VIEW_STORAGE_KEY, defaultView));
   const [issueEdits, setIssueEdits] = useState(() => loadSavedObject(EDITS_STORAGE_KEY, {}));
   const [manualTeams, setManualTeams] = useState(() => loadSavedArray(MANUAL_TEAMS_STORAGE_KEY));
@@ -284,47 +379,27 @@ export default function XFNCenter() {
   }, [manualTeams]);
 
   useEffect(() => {
-    fetchJson("/api/xfn-sync")
+    fetchJson("/api/boards")
       .then((payload) => {
-        const nextBoards = payload.boards || [];
-        setXfnPayload(payload);
+        const nextBoards = (payload.boards || []).map(normalizeBoard).filter((board) => board.boardId);
+        setXfnPayload((current) => ({
+          ...current,
+          ...payload,
+          boards: nextBoards,
+          rows: current.rows || [],
+        }));
         setSpaceName(payload.spaceProjectName || "Alli AI & Software Engineering");
         setSpaceKey(payload.spaceProjectKey || "ALLI");
         setView((current) => ({
           ...current,
-          boardId: current.boardId || String(nextBoards[0]?.boardId || ""),
+          boardId: nextBoards.some((board) => board.boardId === current.boardId) ? current.boardId : nextBoards[0]?.boardId || "",
         }));
       })
       .catch((fetchError) => setError(fetchError.message))
       .finally(() => {
         setLoadingBoards(false);
-        setLoadingBoard(false);
       });
   }, [refreshToken]);
-
-  const selectedBoard = useMemo(
-    () => xfnPayload.boards.find((board) => String(board.boardId) === view.boardId) || null,
-    [view.boardId, xfnPayload.boards],
-  );
-
-  const liveTeams = useMemo(
-    () =>
-      (xfnPayload.rows || [])
-        .filter((team) => String(team.boardId) === view.boardId)
-        .map((team) => {
-          const base = toEditableBase(team);
-          const edits = issueEdits[base.storageKey] || {};
-          return { ...base, ...edits };
-        }),
-    [issueEdits, view.boardId, xfnPayload.rows],
-  );
-
-  const scopedManualTeams = useMemo(
-    () => manualTeams.filter((team) => team.boardId === view.boardId).map((team) => ({ ...team })),
-    [manualTeams, view.boardId],
-  );
-
-  const teams = useMemo(() => [...liveTeams, ...scopedManualTeams], [liveTeams, scopedManualTeams]);
 
   const boardOptions = useMemo(
     () =>
@@ -335,14 +410,99 @@ export default function XFNCenter() {
     [xfnPayload.boards],
   );
 
-  const groupOptions = useMemo(
-    () => ["All", ...new Set(teams.map((team) => team.group).filter(Boolean))],
-    [teams],
-  );
-
   const effectiveBoardId = useMemo(
     () => normalizeOptionValue(view.boardId, boardOptions.map((option) => option.value), boardOptions[0]?.value || ""),
     [boardOptions, view.boardId],
+  );
+
+  useEffect(() => {
+    if (!effectiveBoardId) {
+      return undefined;
+    }
+
+    let isCancelled = false;
+
+    fetchJson(`/api/board?boardId=${encodeURIComponent(effectiveBoardId)}&maxResults=500`)
+      .then((payload) => {
+        if (isCancelled) {
+          return;
+        }
+
+        const boardSummary = normalizeBoard(payload);
+        const nextRows = rowsFromBoardPayload(payload);
+        setXfnPayload((current) => {
+          const boardExists = current.boards.some((board) => board.boardId === boardSummary.boardId);
+          const nextBoards = boardExists
+            ? current.boards.map((board) =>
+                board.boardId === boardSummary.boardId
+                  ? {
+                      ...board,
+                      ...boardSummary,
+                      sourceBoards: boardSummary.sourceBoards.length ? boardSummary.sourceBoards : board.sourceBoards,
+                    }
+                  : board,
+              )
+            : [...current.boards, boardSummary];
+
+          return {
+            ...current,
+            dataSource: payload.dataSource || current.dataSource,
+            baseDataSource: payload.baseDataSource || current.baseDataSource,
+            enrichmentDataSource: payload.enrichmentDataSource || current.enrichmentDataSource,
+            mcpStatus: payload.mcpStatus || current.mcpStatus,
+            mcpWarning: payload.mcpWarning || current.mcpWarning,
+            mcpTools: payload.mcpTools || current.mcpTools,
+            spaceProjectKey: payload.spaceProjectKey || current.spaceProjectKey,
+            spaceProjectName: payload.spaceProjectName || current.spaceProjectName,
+            lastSync: payload.lastSync || current.lastSync,
+            boards: nextBoards,
+            rows: [...(current.rows || []).filter((row) => String(row.boardId) !== boardSummary.boardId), ...nextRows],
+          };
+        });
+      })
+      .catch((fetchError) => {
+        if (!isCancelled) {
+          setError(fetchError.message);
+        }
+      })
+      .finally(() => {
+        if (!isCancelled) {
+          setLoadingBoard(false);
+        }
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [effectiveBoardId, refreshToken]);
+
+  const selectedBoard = useMemo(
+    () => xfnPayload.boards.find((board) => String(board.boardId) === effectiveBoardId) || null,
+    [effectiveBoardId, xfnPayload.boards],
+  );
+
+  const liveTeams = useMemo(
+    () =>
+      (xfnPayload.rows || [])
+        .filter((team) => String(team.boardId) === effectiveBoardId)
+        .map((team) => {
+          const base = toEditableBase(team);
+          const edits = issueEdits[base.storageKey] || (base.legacyStorageKey ? issueEdits[base.legacyStorageKey] : null) || {};
+          return { ...base, ...edits };
+        }),
+    [effectiveBoardId, issueEdits, xfnPayload.rows],
+  );
+
+  const scopedManualTeams = useMemo(
+    () => manualTeams.filter((team) => team.boardId === effectiveBoardId).map((team) => ({ ...team })),
+    [effectiveBoardId, manualTeams],
+  );
+
+  const teams = useMemo(() => [...liveTeams, ...scopedManualTeams], [liveTeams, scopedManualTeams]);
+
+  const groupOptions = useMemo(
+    () => ["All", ...new Set(teams.map((team) => team.group).filter(Boolean))],
+    [teams],
   );
 
   const effectiveGroup = useMemo(
@@ -407,7 +567,10 @@ export default function XFNCenter() {
           team.impactsOrRisks,
           team.needsFromOtherTeams,
           team.sourceBoardName,
+          team.sourceBoardId,
           team.sprintName,
+          team.sprintCadenceLabel,
+          sprintWindowLabel(team),
         ]
           .join(" ")
           .toLowerCase()
@@ -470,6 +633,11 @@ export default function XFNCenter() {
   }, [filteredTeams.length, scopedManualTeams.length, selectedBoard?.boardName, teams]);
 
   function updateView(key, value) {
+    if (key === "boardId" && value !== view.boardId) {
+      setLoadingBoard(true);
+      setError("");
+      setSelectedIssueKey("");
+    }
     setView((current) => ({ ...current, [key]: value }));
     setPage(1);
   }
@@ -489,6 +657,13 @@ export default function XFNCenter() {
     setLoadingBoard(true);
     setError("");
     setRefreshToken((value) => value + 1);
+  }
+
+  function selectTeamRow(storageKey) {
+    setSelectedIssueKey(storageKey);
+    window.requestAnimationFrame(() => {
+      detailPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
   }
 
   function updateSelectedTeamField(field, value) {
@@ -520,6 +695,9 @@ export default function XFNCenter() {
     setIssueEdits((current) => {
       const next = { ...current };
       delete next[selectedTeam.storageKey];
+      if (selectedTeam.legacyStorageKey) {
+        delete next[selectedTeam.legacyStorageKey];
+      }
       return next;
     });
   }
@@ -535,6 +713,8 @@ export default function XFNCenter() {
   const sourceBoardSummary = selectedBoard?.sourceBoards?.length
     ? selectedBoard.sourceBoards.map((board) => board.name).join(", ")
     : "No source boards loaded";
+  const dataSourceLabel = titleCase(xfnPayload.dataSource || "rest");
+  const mcpLabel = mcpStatusLabel(xfnPayload);
 
   return (
     <main className="xfn-page">
@@ -553,7 +733,13 @@ export default function XFNCenter() {
             <strong>{spaceKey}</strong>
           </div>
 
+          <div className="space-chip">
+            <span>Data</span>
+            <strong>{dataSourceLabel}</strong>
+          </div>
+
           <span className="sync-meta">Last Jira pull: {formatSyncTime(xfnPayload.lastSync)}</span>
+          {mcpLabel ? <span className="sync-meta">{mcpLabel}</span> : null}
 
           <button className="ghost-button" onClick={refreshBoardData} type="button">
             <RefreshCw size={16} />
@@ -571,6 +757,7 @@ export default function XFNCenter() {
         <div>
           <h2>{selectedBoard?.boardName || "Loading board"}</h2>
           <p>{selectedBoard?.sprintLabel || "Current or most recent sprint scope will appear here once Jira data loads."}</p>
+          {xfnPayload.mcpWarning ? <p>{xfnPayload.mcpWarning}</p> : null}
         </div>
         <div className="source-block">
           <small>Boards included from the ALLI space</small>
@@ -686,7 +873,7 @@ export default function XFNCenter() {
                     <tr
                       key={row.storageKey}
                       className={selectedTeam?.storageKey === row.storageKey ? "selected-row" : ""}
-                      onClick={() => setSelectedIssueKey(row.storageKey)}
+                      onClick={() => selectTeamRow(row.storageKey)}
                     >
                       <td>
                         <div className="cell-stack">
@@ -717,10 +904,22 @@ export default function XFNCenter() {
                       </td>
                       <td>{teamHasRisks(row) ? compactText(row.impactsOrRisks, 56) : <span className="empty-cell">—</span>}</td>
                       <td>{teamHasNeeds(row) ? compactText(row.needsFromOtherTeams, 56) : <span className="empty-cell">—</span>}</td>
-                      <td>{previewText(row.sourceBoardName)}</td>
+                      <td>
+                        <div className="cell-stack">
+                          <span>{previewText(row.sourceBoardName)}</span>
+                          <small>{previewText(sprintSummary(row))}</small>
+                        </div>
+                      </td>
                     </tr>
                   ))}
-                  {pageTeams.length === 0 ? (
+                  {pageTeams.length === 0 && loadingBoard ? (
+                    <tr>
+                      <td className="empty-cell" colSpan="7">
+                        Loading Jira data for {selectedBoard?.boardName || "this board"}...
+                      </td>
+                    </tr>
+                  ) : null}
+                  {pageTeams.length === 0 && !loadingBoard ? (
                     <tr>
                       <td className="empty-cell" colSpan="7">
                         No product goal entries match the current filters.
@@ -756,7 +955,7 @@ export default function XFNCenter() {
           </article>
 
           {selectedTeam ? (
-            <article className="panel detail-panel">
+            <article className="panel detail-panel" ref={detailPanelRef}>
               <div className="detail-header">
                 <div>
                   <h2>{selectedTeam.team || selectedTeam.issueKey || "Entry"}</h2>
@@ -786,13 +985,19 @@ export default function XFNCenter() {
 
                 <div className="details-stack">
                   <DetailItem icon={Target} tone="blue" title="Product Goal" body={previewText(selectedTeam.productGoal)} />
-                  <DetailItem icon={Users} tone="purple" title="Owners" body={`PM: ${previewText(selectedTeam.pmOwner)} • TL: ${previewText(selectedTeam.tlOwner)}`} />
+                  <DetailItem icon={Users} tone="purple" title="Owners" body={ownersSummary(selectedTeam)} />
                   <DetailItem icon={CheckCircle2} tone="green" title="Sprint Goal" body={previewText(selectedTeam.sprintGoal)} />
                   <DetailItem
                     icon={Link2}
                     tone="orange"
                     title="Source Board + Sprint"
-                    body={`${previewText(selectedTeam.sourceBoardName)}${selectedTeam.sprintName ? ` • ${selectedTeam.sprintName}` : ""}`}
+                    body={`${previewText(selectedTeam.sourceBoardName)}${sprintSummary(selectedTeam) ? ` • ${sprintSummary(selectedTeam)}` : ""}`}
+                  />
+                  <DetailItem
+                    icon={Activity}
+                    tone="purple"
+                    title="Sprint Cadence"
+                    body={sprintCadenceDetail(selectedTeam)}
                   />
                   <DetailItem icon={CheckCircle2} tone="green" title="Assignee" body={previewText(selectedTeam.assignee)} />
                   <DetailItem

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import math
+import re
 from collections import defaultdict
+from datetime import datetime
 from typing import Any
 
 from backend.jira_client import JiraClient
@@ -53,9 +56,11 @@ FIELDS = {
     "risks": "customfield_10680",
     "project_health": "customfield_10625",
     "pm_update": "customfield_10627",
+    "project_manager": "customfield_10626",
     "delivery_progress": "customfield_11028",
     "delivery_status": "customfield_11029",
     "project_status": "customfield_11859",
+    "owner": "customfield_10701",
     "cross_functional_team": "customfield_10634",
     "team": "customfield_10038",
     "team_alt": "customfield_10001",
@@ -142,6 +147,103 @@ def _normalize_components(value: Any) -> list[str]:
     return names
 
 
+def _parse_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _parse_sprint_string(value: str) -> dict[str, Any]:
+    pairs = re.findall(r"(\w+)=([^,\]]*)", value)
+    parsed = {key: item for key, item in pairs}
+    if "rapidViewId" in parsed and "boardId" not in parsed:
+        parsed["boardId"] = parsed["rapidViewId"]
+    return parsed
+
+
+def _normalize_sprint(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        sprint = dict(value)
+    elif isinstance(value, str):
+        sprint = _parse_sprint_string(value)
+    else:
+        return None
+
+    start_date = sprint.get("startDate") or sprint.get("start") or ""
+    end_date = sprint.get("endDate") or sprint.get("end") or ""
+    duration_days = _sprint_duration_days(start_date, end_date)
+    board_id = sprint.get("boardId") or sprint.get("rapidViewId") or sprint.get("originBoardId")
+    sprint_id = sprint.get("id") or sprint.get("sprintId")
+    return {
+        "id": str(sprint_id) if sprint_id not in (None, "") else "",
+        "name": str(sprint.get("name") or sprint.get("sprintName") or ""),
+        "state": str(sprint.get("state") or ""),
+        "boardId": board_id,
+        "startDate": str(start_date),
+        "endDate": str(end_date),
+        "completeDate": str(sprint.get("completeDate") or ""),
+        "goal": str(sprint.get("goal") or ""),
+        "durationDays": duration_days,
+        "cadenceLabel": _sprint_cadence_label(duration_days),
+    }
+
+
+def _sprint_duration_days(start_date: Any, end_date: Any) -> int | None:
+    start = _parse_datetime(start_date)
+    end = _parse_datetime(end_date)
+    if not start or not end:
+        return None
+    seconds = (end - start).total_seconds()
+    if seconds <= 0:
+        return None
+    return max(1, math.ceil(seconds / 86400))
+
+
+def _sprint_cadence_label(duration_days: int | None) -> str:
+    if duration_days is None:
+        return ""
+    if 6 <= duration_days <= 8:
+        return "1 week sprint"
+    if 13 <= duration_days <= 15:
+        return "2 week sprint"
+    return f"{duration_days} day sprint"
+
+
+def _select_relevant_sprint(sprint_values: Any) -> dict[str, Any] | None:
+    if not isinstance(sprint_values, list):
+        sprint_values = [sprint_values] if sprint_values else []
+    normalized = [sprint for sprint in (_normalize_sprint(value) for value in sprint_values) if sprint]
+    active = [sprint for sprint in normalized if sprint["state"].lower() == "active"]
+    if active:
+        active.sort(key=lambda sprint: sprint["startDate"] or sprint["id"], reverse=True)
+        return active[0]
+    if normalized:
+        normalized.sort(key=lambda sprint: sprint["endDate"] or sprint["startDate"] or sprint["id"], reverse=True)
+        return normalized[0]
+    return None
+
+
+def _sprint_meta(sprint: Any) -> dict[str, Any]:
+    normalized = _normalize_sprint(sprint)
+    return {
+        "sprintId": normalized.get("id", "") if normalized else "",
+        "sprintName": normalized.get("name", "") if normalized else "",
+        "sprintState": normalized.get("state", "") if normalized else "",
+        "sprintGoal": normalized.get("goal", "") if normalized else "",
+        "sprintStartDate": normalized.get("startDate", "") if normalized else "",
+        "sprintEndDate": normalized.get("endDate", "") if normalized else "",
+        "sprintCompleteDate": normalized.get("completeDate", "") if normalized else "",
+        "sprintDurationDays": normalized.get("durationDays") if normalized else None,
+        "sprintCadenceLabel": normalized.get("cadenceLabel", "") if normalized else "",
+    }
+
+
 def _get_alli_boards(client: JiraClient) -> list[dict[str, Any]]:
     return [
         board
@@ -174,9 +276,8 @@ def _latest_or_active_sprint(client: JiraClient, *, board_id: int) -> dict[str, 
 
 def _normalize_child_issue(issue: dict[str, Any]) -> dict[str, Any]:
     fields = issue.get("fields", {})
-    sprint_values = fields.get(FIELDS["sprint"]) or []
-    active_sprint = next((sprint for sprint in sprint_values if sprint.get("state") == "active"), None)
-    recent_sprint = active_sprint or (sprint_values[-1] if sprint_values else None)
+    recent_sprint = _select_relevant_sprint(fields.get(FIELDS["sprint"]))
+    sprint_meta = _sprint_meta(recent_sprint)
     return {
         "issueKey": issue.get("key"),
         "issueUrl": f"{JIRA_BROWSE_BASE}/{issue.get('key')}",
@@ -184,9 +285,8 @@ def _normalize_child_issue(issue: dict[str, Any]) -> dict[str, Any]:
         "status": _first_text(fields.get(FIELDS["status"]), fallback="Unknown"),
         "components": _normalize_components(fields.get(FIELDS["components"])),
         "epicKey": fields.get(FIELDS["epic_link"]),
-        "sprintName": recent_sprint.get("name", "") if recent_sprint else "",
-        "sprintState": recent_sprint.get("state", "") if recent_sprint else "",
         "sprintBoardId": recent_sprint.get("boardId") if recent_sprint else None,
+        **sprint_meta,
     }
 
 
@@ -217,6 +317,8 @@ def _normalize_epic(issue: dict[str, Any]) -> dict[str, Any]:
         ),
         "status": _first_text(fields.get(FIELDS["status"]), fallback="Unknown"),
         "assignee": _first_text(fields.get(FIELDS["assignee"]), fallback="Unassigned"),
+        "pmOwner": _first_text(fields.get(FIELDS["project_manager"]), fallback=""),
+        "tlOwner": _first_text(fields.get(FIELDS["owner"]), fallback=""),
         "updated": fields.get(FIELDS["updated"]),
         "currentProgress": _first_text(
             fields.get(FIELDS["delivery_progress"]),
@@ -279,6 +381,8 @@ def _issue_fields_for_epics() -> list[str]:
         FIELDS["risks"],
         FIELDS["dependencies"],
         FIELDS["blocking_deliverable"],
+        FIELDS["project_manager"],
+        FIELDS["owner"],
         FIELDS["pm_update"],
         FIELDS["delivery_progress"],
         FIELDS["delivery_status"],
@@ -358,9 +462,7 @@ def build_board_payload(client: JiraClient, *, board_key: str, max_results: int 
                     epic_key,
                     {
                         "sourceBoardName": board["name"],
-                        "sprintName": sprint.get("name", "") if sprint else "",
-                        "sprintState": sprint.get("state", "") if sprint else "",
-                        "sprintGoal": sprint.get("goal", "") if sprint else "",
+                        **_sprint_meta(sprint),
                     },
                 )
             elif issue_type == "Epic":
@@ -369,9 +471,7 @@ def build_board_payload(client: JiraClient, *, board_key: str, max_results: int 
                     child["issueKey"],
                     {
                         "sourceBoardName": board["name"],
-                        "sprintName": sprint.get("name", "") if sprint else "",
-                        "sprintState": sprint.get("state", "") if sprint else "",
-                        "sprintGoal": sprint.get("goal", "") if sprint else "",
+                        **_sprint_meta(sprint),
                     },
                 )
 
@@ -403,7 +503,13 @@ def build_board_payload(client: JiraClient, *, board_key: str, max_results: int 
                 "sourceBoardName": board_names_by_id.get(first_child["sprintBoardId"], "Cross-Functional Board"),
                 "sprintName": first_child["sprintName"],
                 "sprintState": first_child["sprintState"],
-                "sprintGoal": "",
+                "sprintGoal": first_child.get("sprintGoal", ""),
+                "sprintId": first_child.get("sprintId", ""),
+                "sprintStartDate": first_child.get("sprintStartDate", ""),
+                "sprintEndDate": first_child.get("sprintEndDate", ""),
+                "sprintCompleteDate": first_child.get("sprintCompleteDate", ""),
+                "sprintDurationDays": first_child.get("sprintDurationDays"),
+                "sprintCadenceLabel": first_child.get("sprintCadenceLabel", ""),
             },
         )
 
@@ -449,11 +555,17 @@ def build_board_payload(client: JiraClient, *, board_key: str, max_results: int 
                 "productGoal": epic["productGoal"],
                 "team": epic["scrumTeam"],
                 "group": epic["group"],
-                "pmOwner": "",
-                "tlOwner": "",
+                "pmOwner": epic["pmOwner"],
+                "tlOwner": epic["tlOwner"],
                 "status": epic["status"],
                 "assignee": epic["assignee"],
                 "sprintGoal": meta.get("sprintGoal", ""),
+                "sprintId": meta.get("sprintId", ""),
+                "sprintStartDate": meta.get("sprintStartDate", ""),
+                "sprintEndDate": meta.get("sprintEndDate", ""),
+                "sprintCompleteDate": meta.get("sprintCompleteDate", ""),
+                "sprintDurationDays": meta.get("sprintDurationDays"),
+                "sprintCadenceLabel": meta.get("sprintCadenceLabel", ""),
                 "currentProgress": epic["currentProgress"] or _format_child_issue_summaries(children),
                 "upcomingWork": "",
                 "impactsOrRisks": epic["impactsOrRisks"],
